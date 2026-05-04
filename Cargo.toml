@@ -1,0 +1,22 @@
+[package]
+name = "tiny"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "A minimal, readable agent framework in Rust"
+
+[lib]
+name = "tiny"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tiny"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+async-trait = "0.1"
+anyhow = "1"
