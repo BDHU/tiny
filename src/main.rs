@@ -2,10 +2,10 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
-use std::io::Write;
 use std::path::PathBuf;
-use tiny::{Agent, Decision, Event, OpenAiProvider, Tool};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tiny::{Agent, Decision, OpenAiProvider, Tool};
+
+mod tui;
 
 #[derive(Deserialize, Default)]
 struct Config {
@@ -28,8 +28,6 @@ fn load_config() -> Result<Config> {
 
     Ok(Config::default())
 }
-
-// --- ReadTool: shows how to implement a tool ---
 
 struct ReadTool;
 
@@ -56,8 +54,6 @@ impl Tool for ReadTool {
     }
 }
 
-// --- main ---
-
 #[tokio::main]
 async fn main() -> Result<()> {
     let cfg = load_config()?;
@@ -70,38 +66,12 @@ async fn main() -> Result<()> {
         .system
         .unwrap_or_else(|| "You are a helpful assistant.".to_string());
 
-    let mut agent =
-        Agent::new(OpenAiProvider::new(api_key, model), system).with_permission(|name, _input| {
-            match name {
-                "read" => Decision::Allow,
-                other => Decision::Deny(format!("tool '{other}' is not permitted")),
-            }
+    let mut agent = Agent::new(OpenAiProvider::new(api_key, model.clone()), system)
+        .with_permission(|name, _input| match name {
+            "read" => Decision::Allow,
+            other => Decision::Deny(format!("tool '{other}' is not permitted")),
         });
     agent.register_tool(ReadTool);
 
-    let mut lines = BufReader::new(tokio::io::stdin()).lines();
-
-    loop {
-        print!("> ");
-        std::io::stdout().flush()?;
-
-        let line = match lines.next_line().await? {
-            None => break,
-            Some(l) => l,
-        };
-        let line = line.trim().to_string();
-        if line.is_empty() {
-            continue;
-        }
-
-        agent
-            .send(line, |event| {
-                if let Event::AssistantText(text) = event {
-                    println!("{text}");
-                }
-            })
-            .await?;
-    }
-
-    Ok(())
+    tui::run(agent, model).await
 }
