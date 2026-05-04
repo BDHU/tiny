@@ -1,4 +1,4 @@
-use crate::message::{ContentBlock, Message, Role};
+use crate::message::{Message, ToolCall};
 use crate::provider::Provider;
 use crate::tool::Tool;
 use anyhow::{anyhow, Context, Result};
@@ -63,58 +63,41 @@ impl Provider for OpenAiProvider {
     }
 }
 
-// OpenAI tool results are separate top-level messages with role "tool",
-// unlike Anthropic where they are blocks inside a user message.
 fn message_to_wire(msg: &Message) -> Vec<Value> {
-    match msg.role {
-        Role::User => {
-            let has_tool_results = msg
-                .content
-                .iter()
-                .any(|b| matches!(b, ContentBlock::ToolResult { .. }));
-
-            if has_tool_results {
-                msg.content
-                    .iter()
-                    .filter_map(|b| match b {
-                        ContentBlock::ToolResult {
-                            tool_use_id,
-                            content,
-                            ..
-                        } => Some(json!({
-                            "role": "tool",
-                            "tool_call_id": tool_use_id,
-                            "content": content,
-                        })),
-                        _ => None,
-                    })
-                    .collect()
+    match msg {
+        Message::User(text) => vec![json!({"role": "user", "content": text})],
+        Message::Assistant { text, tool_calls } => {
+            let mut wire = json!({"role": "assistant"});
+            wire["content"] = if text.is_empty() {
+                Value::Null
             } else {
-                vec![json!({"role": "user", "content": msg.text_concat()})]
-            }
-        }
-        Role::Assistant => {
-            let text = msg.text_concat();
-            let tool_calls: Vec<Value> = msg
-                .content
+                json!(text)
+            };
+
+            let tool_calls: Vec<Value> = tool_calls
                 .iter()
-                .filter_map(|b| match b {
-                    ContentBlock::ToolUse { id, name, input } => Some(json!({
-                        "id": id,
+                .map(|call| {
+                    json!({
+                        "id": call.id,
                         "type": "function",
-                        "function": {"name": name, "arguments": input.to_string()},
-                    })),
-                    _ => None,
+                        "function": {
+                            "name": call.name,
+                            "arguments": call.input.to_string(),
+                        },
+                    })
                 })
                 .collect();
-
-            let mut wire = json!({"role": "assistant"});
-            wire["content"] = if text.is_empty() { Value::Null } else { json!(text) };
             if !tool_calls.is_empty() {
                 wire["tool_calls"] = json!(tool_calls);
             }
+
             vec![wire]
         }
+        Message::Tool(result) => vec![json!({
+            "role": "tool",
+            "tool_call_id": result.id,
+            "content": result.content,
+        })],
     }
 }
 
@@ -135,26 +118,25 @@ fn wire_to_message(value: &Value) -> Result<Message> {
 
     if let Some(text) = msg["content"].as_str() {
         if !text.is_empty() {
-            content.push(ContentBlock::Text(text.to_string()));
+            content.push(text.to_string());
         }
     }
 
-    if let Some(tool_calls) = msg["tool_calls"].as_array() {
-        for tc in tool_calls {
+    let text = content.join("\n");
+    let mut tool_calls = Vec::new();
+    if let Some(wire_tool_calls) = msg["tool_calls"].as_array() {
+        for tc in wire_tool_calls {
             let id = tc["id"].as_str().unwrap_or("").to_string();
             let name = tc["function"]["name"].as_str().unwrap_or("").to_string();
             let args = tc["function"]["arguments"].as_str().unwrap_or("{}");
             let input: Value = serde_json::from_str(args).context("parse tool arguments")?;
-            content.push(ContentBlock::ToolUse { id, name, input });
+            tool_calls.push(ToolCall { id, name, input });
         }
     }
 
-    if content.is_empty() {
+    if text.is_empty() && tool_calls.is_empty() {
         return Err(anyhow!("empty response: {}", value));
     }
 
-    Ok(Message {
-        role: Role::Assistant,
-        content,
-    })
+    Ok(Message::Assistant { text, tool_calls })
 }
