@@ -4,7 +4,6 @@ use serde_json::Value;
 pub enum Role {
     User,
     Assistant,
-    System,
 }
 
 #[derive(Debug, Clone)]

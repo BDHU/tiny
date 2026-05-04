@@ -1,13 +1,8 @@
 use crate::message::{ContentBlock, Message, Role};
+use crate::tool::Tool;
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use serde_json::{json, Value};
-
-pub struct ToolSpec {
-    pub name: String,
-    pub description: String,
-    pub input_schema: Value,
-}
 
 #[async_trait]
 pub trait Provider: Send + Sync {
@@ -15,14 +10,13 @@ pub trait Provider: Send + Sync {
         &self,
         system: &str,
         messages: &[Message],
-        tools: &[ToolSpec],
+        tools: &[&dyn Tool],
     ) -> Result<Message>;
 }
 
 pub struct AnthropicProvider {
     api_key: String,
     model: String,
-    max_tokens: u32,
     client: reqwest::Client,
 }
 
@@ -31,14 +25,8 @@ impl AnthropicProvider {
         Self {
             api_key: api_key.into(),
             model: model.into(),
-            max_tokens: 4096,
             client: reqwest::Client::new(),
         }
-    }
-
-    pub fn with_max_tokens(mut self, max_tokens: u32) -> Self {
-        self.max_tokens = max_tokens;
-        self
     }
 }
 
@@ -48,14 +36,14 @@ impl Provider for AnthropicProvider {
         &self,
         system: &str,
         messages: &[Message],
-        tools: &[ToolSpec],
+        tools: &[&dyn Tool],
     ) -> Result<Message> {
         let body = json!({
             "model": self.model,
-            "max_tokens": self.max_tokens,
+            "max_tokens": 4096,
             "system": system,
             "messages": messages.iter().map(message_to_wire).collect::<Vec<_>>(),
-            "tools": tools.iter().map(tool_to_wire).collect::<Vec<_>>(),
+            "tools": tools.iter().map(|t| tool_to_wire(*t)).collect::<Vec<_>>(),
         });
 
         let response = self
@@ -83,7 +71,6 @@ fn message_to_wire(msg: &Message) -> Value {
     let role = match msg.role {
         Role::User => "user",
         Role::Assistant => "assistant",
-        Role::System => "user",
     };
     let content: Vec<Value> = msg.content.iter().map(block_to_wire).collect();
     json!({ "role": role, "content": content })
@@ -108,11 +95,11 @@ fn block_to_wire(block: &ContentBlock) -> Value {
     }
 }
 
-fn tool_to_wire(spec: &ToolSpec) -> Value {
+fn tool_to_wire(tool: &dyn Tool) -> Value {
     json!({
-        "name": spec.name,
-        "description": spec.description,
-        "input_schema": spec.input_schema,
+        "name": tool.name(),
+        "description": tool.description(),
+        "input_schema": tool.input_schema(),
     })
 }
 
