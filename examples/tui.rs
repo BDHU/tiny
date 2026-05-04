@@ -14,11 +14,34 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
     Terminal,
 };
+use serde::Deserialize;
 use serde_json::Value;
-use std::{io::stdout, time::Duration};
-use tiny::{Agent, Config, Decision, Event, OpenAiProvider, Tool};
+use std::{io::stdout, path::PathBuf, time::Duration};
+use tiny::{Agent, Decision, Event, OpenAiProvider, Tool};
 
 const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+#[derive(Deserialize, Default)]
+struct Config {
+    api_key: Option<String>,
+    model: Option<String>,
+    system: Option<String>,
+}
+
+fn load_config() -> Result<Config> {
+    if let Ok(text) = std::fs::read_to_string("tiny.json") {
+        return Ok(serde_json::from_str(&text)?);
+    }
+
+    if let Some(home) = std::env::var_os("HOME") {
+        let path = PathBuf::from(home).join(".tiny").join("config.json");
+        if let Ok(text) = std::fs::read_to_string(path) {
+            return Ok(serde_json::from_str(&text)?);
+        }
+    }
+
+    Ok(Config::default())
+}
 
 // ── ReadTool ──────────────────────────────────────────────────────────────────
 
@@ -26,8 +49,12 @@ struct ReadTool;
 
 #[async_trait]
 impl Tool for ReadTool {
-    fn name(&self) -> &str { "read" }
-    fn description(&self) -> &str { "Read the contents of a file from disk." }
+    fn name(&self) -> &str {
+        "read"
+    }
+    fn description(&self) -> &str {
+        "Read the contents of a file from disk."
+    }
     fn input_schema(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -54,7 +81,7 @@ enum Entry {
 
 struct App {
     input: String,
-    cursor: usize,                     // byte index
+    cursor: usize, // byte index
     entries: Vec<Entry>,
     scroll: u16,
     auto_scroll: bool,
@@ -72,7 +99,8 @@ fn ui(f: &mut ratatui::Frame, app: &App) {
         Constraint::Fill(1),
         Constraint::Length(3),
         Constraint::Length(1),
-    ]).areas(f.area());
+    ])
+    .areas(f.area());
 
     // messages
     let mut lines: Vec<Line> = Vec::new();
@@ -82,7 +110,9 @@ fn ui(f: &mut ratatui::Frame, app: &App) {
                 lines.push(Line::default());
                 lines.push(Line::from(Span::styled(
                     format!("You: {text}"),
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
                 )));
             }
             Entry::Assistant(text) => {
@@ -93,7 +123,11 @@ fn ui(f: &mut ratatui::Frame, app: &App) {
             }
             Entry::ToolCall { name, args } => {
                 let arg_str = args.to_string();
-                let preview = if arg_str.len() > 60 { format!("{}…", &arg_str[..60]) } else { arg_str };
+                let preview = if arg_str.len() > 60 {
+                    format!("{}…", &arg_str[..60])
+                } else {
+                    arg_str
+                };
                 lines.push(Line::from(Span::styled(
                     format!("  ⚙ {name}({preview})"),
                     Style::default().fg(Color::Yellow),
@@ -125,7 +159,9 @@ fn ui(f: &mut ratatui::Frame, app: &App) {
     }
 
     f.render_widget(
-        Paragraph::new(lines).wrap(Wrap { trim: false }).scroll((app.scroll, 0)),
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .scroll((app.scroll, 0)),
         msg_area,
     );
 
@@ -136,21 +172,23 @@ fn ui(f: &mut ratatui::Frame, app: &App) {
         input_area,
     );
     // cursor: +1 border, +2 for "> "
-    f.set_cursor_position((
-        input_area.x + 1 + 2 + app.cursor as u16,
-        input_area.y + 1,
-    ));
+    f.set_cursor_position((input_area.x + 1 + 2 + app.cursor as u16, input_area.y + 1));
 
     // status bar
-    let msg_count = app.entries.iter()
+    let msg_count = app
+        .entries
+        .iter()
         .filter(|e| matches!(e, Entry::User(_) | Entry::Assistant(_)))
         .count();
     let cwd = std::env::current_dir().unwrap_or_default();
     f.render_widget(
         Paragraph::new(format!(
             " {} • {} messages • {}  (Ctrl+D to exit)",
-            app.model, msg_count, cwd.display()
-        )).style(Style::default().fg(Color::DarkGray)),
+            app.model,
+            msg_count,
+            cwd.display()
+        ))
+        .style(Style::default().fg(Color::DarkGray)),
         status_area,
     );
 }
@@ -159,15 +197,25 @@ fn ui(f: &mut ratatui::Frame, app: &App) {
 
 async fn run_turn(mut agent: Agent, input: String) -> (Agent, Result<Vec<Entry>>) {
     let mut entries = vec![Entry::User(input.clone())];
-    let result = agent.send(input, |event| match event {
-        Event::AssistantText(text) => entries.push(Entry::Assistant(text.clone())),
-        Event::ToolCall { name, input, .. } => {
-            entries.push(Entry::ToolCall { name: name.clone(), args: input.clone() });
-        }
-        Event::ToolResult { content, is_error, .. } => {
-            entries.push(Entry::ToolResult { content: content.clone(), is_error: *is_error });
-        }
-    }).await;
+    let result = agent
+        .send(input, |event| match event {
+            Event::AssistantText(text) => entries.push(Entry::Assistant(text.clone())),
+            Event::ToolCall { name, input, .. } => {
+                entries.push(Entry::ToolCall {
+                    name: name.clone(),
+                    args: input.clone(),
+                });
+            }
+            Event::ToolResult {
+                content, is_error, ..
+            } => {
+                entries.push(Entry::ToolResult {
+                    content: content.clone(),
+                    is_error: *is_error,
+                });
+            }
+        })
+        .await;
     (agent, result.map(|_| entries))
 }
 
@@ -185,12 +233,16 @@ async fn run(
         // auto-scroll to bottom when new content arrives
         if app.auto_scroll {
             let height = terminal.size()?.height.saturating_sub(4);
-            let total: u16 = app.entries.iter().map(|e| match e {
-                Entry::User(_)         => 2,
-                Entry::Assistant(t)    => t.lines().count() as u16 + 1,
-                Entry::ToolCall { .. } => 1,
-                Entry::ToolResult { .. } => 1,
-            }).sum();
+            let total: u16 = app
+                .entries
+                .iter()
+                .map(|e| match e {
+                    Entry::User(_) => 2,
+                    Entry::Assistant(t) => t.lines().count() as u16 + 1,
+                    Entry::ToolCall { .. } => 1,
+                    Entry::ToolResult { .. } => 1,
+                })
+                .sum();
             app.scroll = total.saturating_sub(height);
             app.auto_scroll = false;
         }
@@ -273,17 +325,22 @@ async fn run(
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cfg = Config::load()?;
-    let api_key = cfg.api_key
+    let cfg = load_config()?;
+    let api_key = cfg
+        .api_key
         .or_else(|| std::env::var("OPENAI_API_KEY").ok())
         .context("set api_key in tiny.json or OPENAI_API_KEY")?;
     let model = cfg.model.unwrap_or_else(|| "gpt-4o-mini".to_string());
-    let system = cfg.system.unwrap_or_else(|| "You are a helpful assistant.".to_string());
+    let system = cfg
+        .system
+        .unwrap_or_else(|| "You are a helpful assistant.".to_string());
 
-    let mut agent = Agent::new(OpenAiProvider::new(&api_key, &model), system)
-        .with_permission(|name, _| match name {
-            "read" => Decision::Allow,
-            other => Decision::Deny(format!("'{other}' not permitted")),
+    let mut agent =
+        Agent::new(OpenAiProvider::new(&api_key, &model), system).with_permission(|name, _| {
+            match name {
+                "read" => Decision::Allow,
+                other => Decision::Deny(format!("'{other}' not permitted")),
+            }
         });
     agent.register_tool(ReadTool);
 
