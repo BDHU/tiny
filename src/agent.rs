@@ -1,4 +1,4 @@
-use crate::message::{ContentBlock, Message, Role};
+use crate::message::{Message, ToolCall, ToolResult};
 use crate::permission::Decision;
 use crate::provider::Provider;
 use crate::tool::Tool;
@@ -58,7 +58,7 @@ impl Agent {
         user_input: impl Into<String>,
         mut on_event: impl FnMut(&Event),
     ) -> Result<()> {
-        self.history.push(Message::user_text(user_input));
+        self.history.push(Message::User(user_input.into()));
         loop {
             let tool_refs: Vec<&dyn Tool> = self.tools.iter().map(|t| t.as_ref()).collect();
             let assistant = self
@@ -67,49 +67,48 @@ impl Agent {
                 .await?;
             self.history.push(assistant.clone());
 
-            let text = assistant.text_concat();
+            let Message::Assistant { text, tool_calls } = assistant else {
+                return Err(anyhow::anyhow!("provider returned a non-assistant message"));
+            };
+
             if !text.is_empty() {
                 on_event(&Event::AssistantText(text));
             }
 
-            let tool_uses: Vec<_> = assistant
-                .tool_uses()
-                .map(|(id, name, input)| (id.to_string(), name.to_string(), input.clone()))
-                .collect();
-
-            if tool_uses.is_empty() {
+            if tool_calls.is_empty() {
                 return Ok(());
             }
 
-            let mut results = Vec::new();
-            for (id, name, input) in tool_uses {
+            for tool_call in tool_calls {
                 on_event(&Event::ToolCall {
-                    id: id.clone(),
-                    name: name.clone(),
-                    input: input.clone(),
+                    id: tool_call.id.clone(),
+                    name: tool_call.name.clone(),
+                    input: tool_call.input.clone(),
                 });
-                let (content, is_error) = match (self.permission)(&name, &input) {
-                    Decision::Allow => match self.dispatch(&name, input).await {
-                        Ok(out) => (out, false),
-                        Err(e) => (e.to_string(), true),
-                    },
-                    Decision::Deny(reason) => (reason, true),
-                };
+                let result = self.call_tool(tool_call).await;
                 on_event(&Event::ToolResult {
-                    id: id.clone(),
-                    content: content.clone(),
-                    is_error,
+                    id: result.id.clone(),
+                    content: result.content.clone(),
+                    is_error: result.is_error,
                 });
-                results.push(ContentBlock::ToolResult {
-                    tool_use_id: id,
-                    content,
-                    is_error,
-                });
+                self.history.push(Message::Tool(result));
             }
-            self.history.push(Message {
-                role: Role::User,
-                content: results,
-            });
+        }
+    }
+
+    async fn call_tool(&self, tool_call: ToolCall) -> ToolResult {
+        let (content, is_error) = match (self.permission)(&tool_call.name, &tool_call.input) {
+            Decision::Allow => match self.dispatch(&tool_call.name, tool_call.input).await {
+                Ok(out) => (out, false),
+                Err(e) => (e.to_string(), true),
+            },
+            Decision::Deny(reason) => (reason, true),
+        };
+
+        ToolResult {
+            id: tool_call.id,
+            content,
+            is_error,
         }
     }
 
