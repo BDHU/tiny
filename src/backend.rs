@@ -71,7 +71,15 @@ async fn run(
     let mut queue: VecDeque<String> = VecDeque::new();
 
     while let Some(input) = next_input(&mut commands, &mut queue, &mut pending).await {
-        run_turn(&mut agent, input, &mut commands, &mut queue, &mut pending, &events).await;
+        run_turn(
+            &mut agent,
+            input,
+            &mut commands,
+            &mut queue,
+            &mut pending,
+            &events,
+        )
+        .await;
     }
 }
 
@@ -122,11 +130,7 @@ async fn run_turn(
     }
 }
 
-fn forward(
-    event: Event,
-    events: &mpsc::UnboundedSender<BackendEvent>,
-    pending: &mut Pending,
-) {
+fn forward(event: Event, events: &mpsc::UnboundedSender<BackendEvent>, pending: &mut Pending) {
     let translated = match event {
         Event::Message(m) => BackendEvent::Message(m),
         Event::PermissionRequest { call, reply } => {
