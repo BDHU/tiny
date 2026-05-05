@@ -4,7 +4,7 @@ pub mod openai;
 pub mod provider;
 pub mod tool;
 
-pub use agent::{Agent, Decision, Event};
+pub use agent::{Agent, Decision, Event, EventSender};
 pub use message::{Message, ToolCall, ToolResult};
 pub use openai::OpenAiProvider;
 pub use provider::Provider;

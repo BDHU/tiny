@@ -16,7 +16,11 @@ pub enum Event {
         call: ToolCall,
         reply: oneshot::Sender<Decision>,
     },
+    TurnError(String),
+    TurnDone,
 }
+
+pub type EventSender = mpsc::UnboundedSender<Event>;
 
 pub struct Agent {
     provider: Box<dyn Provider>,
@@ -51,9 +55,18 @@ impl Agent {
     pub async fn send(
         &mut self,
         user_input: impl Into<String>,
-        events: &mpsc::UnboundedSender<Event>,
+        events: &EventSender,
     ) -> Result<()> {
-        self.record(Message::User(user_input.into()), events);
+        let result = self.send_inner(user_input.into(), events).await;
+        if let Err(error) = &result {
+            let _ = events.send(Event::TurnError(error.to_string()));
+        }
+        let _ = events.send(Event::TurnDone);
+        result
+    }
+
+    async fn send_inner(&mut self, user_input: String, events: &EventSender) -> Result<()> {
+        self.record(Message::User(user_input), events);
 
         loop {
             let assistant = self
@@ -79,7 +92,7 @@ impl Agent {
         }
     }
 
-    fn record(&mut self, message: Message, events: &mpsc::UnboundedSender<Event>) {
+    fn record(&mut self, message: Message, events: &EventSender) {
         self.history.push(message);
         let message = self
             .history
@@ -89,11 +102,7 @@ impl Agent {
         let _ = events.send(Event::Message(message));
     }
 
-    async fn call_tool(
-        &self,
-        tool_call: ToolCall,
-        events: &mpsc::UnboundedSender<Event>,
-    ) -> ToolResult {
+    async fn call_tool(&self, tool_call: ToolCall, events: &EventSender) -> ToolResult {
         let decision = self.ask_permission(&tool_call, events).await;
         let (content, is_error) = match decision {
             Decision::Allow => match self.tools.iter().find(|tool| tool.name() == tool_call.name) {
@@ -113,11 +122,7 @@ impl Agent {
         }
     }
 
-    async fn ask_permission(
-        &self,
-        tool_call: &ToolCall,
-        events: &mpsc::UnboundedSender<Event>,
-    ) -> Decision {
+    async fn ask_permission(&self, tool_call: &ToolCall, events: &EventSender) -> Decision {
         let (reply, decision) = oneshot::channel();
         if events
             .send(Event::PermissionRequest {
