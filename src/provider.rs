@@ -1,5 +1,5 @@
 use crate::message::Message;
-use crate::tool::Tool;
+use crate::tool::ErasedTool;
 use anyhow::Result;
 use async_trait::async_trait;
 
@@ -9,6 +9,6 @@ pub trait Provider: Send + Sync {
         &self,
         system: &str,
         messages: &[Message],
-        tools: &[&dyn Tool],
+        tools: &[Box<dyn ErasedTool>],
     ) -> Result<Message>;
 }

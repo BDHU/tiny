@@ -1,6 +1,6 @@
 use crate::message::{Message, ToolCall};
 use crate::provider::Provider;
-use crate::tool::Tool;
+use crate::tool::ErasedTool;
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use serde_json::{json, Value};
@@ -27,7 +27,7 @@ impl Provider for OpenAiProvider {
         &self,
         system: &str,
         messages: &[Message],
-        tools: &[&dyn Tool],
+        tools: &[Box<dyn ErasedTool>],
     ) -> Result<Message> {
         let mut wire_messages = vec![json!({"role": "system", "content": system})];
         for msg in messages {
@@ -40,7 +40,10 @@ impl Provider for OpenAiProvider {
             "messages": wire_messages,
         });
         if !tools.is_empty() {
-            body["tools"] = json!(tools.iter().map(|t| tool_to_wire(*t)).collect::<Vec<_>>());
+            body["tools"] = json!(tools
+                .iter()
+                .map(|tool| tool_to_wire(tool.as_ref()))
+                .collect::<Vec<_>>());
         }
 
         let response = self
@@ -101,7 +104,7 @@ fn message_to_wire(msg: &Message) -> Vec<Value> {
     }
 }
 
-fn tool_to_wire(tool: &dyn Tool) -> Value {
+fn tool_to_wire(tool: &dyn ErasedTool) -> Value {
     json!({
         "type": "function",
         "function": {
@@ -114,15 +117,7 @@ fn tool_to_wire(tool: &dyn Tool) -> Value {
 
 fn wire_to_message(value: &Value) -> Result<Message> {
     let msg = &value["choices"][0]["message"];
-    let mut content = Vec::new();
-
-    if let Some(text) = msg["content"].as_str() {
-        if !text.is_empty() {
-            content.push(text.to_string());
-        }
-    }
-
-    let text = content.join("\n");
+    let text = msg["content"].as_str().unwrap_or("").to_string();
     let mut tool_calls = Vec::new();
     if let Some(wire_tool_calls) = msg["tool_calls"].as_array() {
         for tc in wire_tool_calls {

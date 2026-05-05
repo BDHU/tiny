@@ -1,31 +1,27 @@
 use crate::message::{Message, ToolCall, ToolResult};
-use crate::permission::Decision;
 use crate::provider::Provider;
-use crate::tool::Tool;
+use crate::tool::{boxed_tool, ErasedTool, Tool};
 use anyhow::Result;
-use serde_json::Value;
+use tokio::sync::{mpsc, oneshot};
+
+#[derive(Debug, Clone)]
+pub enum Decision {
+    Allow,
+    Deny(String),
+}
 
 pub enum Event {
-    AssistantText(String),
-    ToolCall {
-        id: String,
-        name: String,
-        input: Value,
-    },
-    ToolResult {
-        id: String,
-        content: String,
-        is_error: bool,
+    Message(Message),
+    PermissionRequest {
+        call: ToolCall,
+        reply: oneshot::Sender<Decision>,
     },
 }
 
-type PermissionFn = Box<dyn Fn(&str, &Value) -> Decision + Send + Sync>;
-
 pub struct Agent {
     provider: Box<dyn Provider>,
-    tools: Vec<Box<dyn Tool>>,
+    tools: Vec<Box<dyn ErasedTool>>,
     system: String,
-    permission: PermissionFn,
     pub history: Vec<Message>,
 }
 
@@ -35,72 +31,77 @@ impl Agent {
             provider: Box::new(provider),
             tools: Vec::new(),
             system: system.into(),
-            permission: Box::new(|_, _| Decision::Allow),
             history: Vec::new(),
         }
     }
 
     pub fn register_tool(&mut self, tool: impl Tool + 'static) -> &mut Self {
-        self.tools.push(Box::new(tool));
+        self.tools.push(boxed_tool(tool));
         self
     }
 
-    pub fn with_permission(
-        mut self,
-        f: impl Fn(&str, &Value) -> Decision + Send + Sync + 'static,
-    ) -> Self {
-        self.permission = Box::new(f);
+    pub fn register_tools(
+        &mut self,
+        tools: impl IntoIterator<Item = Box<dyn ErasedTool>>,
+    ) -> &mut Self {
+        self.tools.extend(tools);
         self
     }
 
     pub async fn send(
         &mut self,
         user_input: impl Into<String>,
-        mut on_event: impl FnMut(&Event),
+        events: &mpsc::UnboundedSender<Event>,
     ) -> Result<()> {
-        self.history.push(Message::User(user_input.into()));
+        self.record(Message::User(user_input.into()), events);
+
         loop {
-            let tool_refs: Vec<&dyn Tool> = self.tools.iter().map(|t| t.as_ref()).collect();
             let assistant = self
                 .provider
-                .complete(&self.system, &self.history, &tool_refs)
+                .complete(&self.system, &self.history, &self.tools)
                 .await?;
-            self.history.push(assistant.clone());
 
-            let Message::Assistant { text, tool_calls } = assistant else {
+            let Message::Assistant { tool_calls, .. } = &assistant else {
                 return Err(anyhow::anyhow!("provider returned a non-assistant message"));
             };
+            let tool_calls = tool_calls.clone();
 
-            if !text.is_empty() {
-                on_event(&Event::AssistantText(text));
-            }
+            self.record(assistant, events);
 
             if tool_calls.is_empty() {
                 return Ok(());
             }
 
             for tool_call in tool_calls {
-                on_event(&Event::ToolCall {
-                    id: tool_call.id.clone(),
-                    name: tool_call.name.clone(),
-                    input: tool_call.input.clone(),
-                });
-                let result = self.call_tool(tool_call).await;
-                on_event(&Event::ToolResult {
-                    id: result.id.clone(),
-                    content: result.content.clone(),
-                    is_error: result.is_error,
-                });
-                self.history.push(Message::Tool(result));
+                let result = self.call_tool(tool_call, events).await;
+                self.record(Message::Tool(result), events);
             }
         }
     }
 
-    async fn call_tool(&self, tool_call: ToolCall) -> ToolResult {
-        let (content, is_error) = match (self.permission)(&tool_call.name, &tool_call.input) {
-            Decision::Allow => match self.dispatch(&tool_call.name, tool_call.input).await {
-                Ok(out) => (out, false),
-                Err(e) => (e.to_string(), true),
+    fn record(&mut self, message: Message, events: &mpsc::UnboundedSender<Event>) {
+        self.history.push(message);
+        let message = self
+            .history
+            .last()
+            .expect("message was just recorded")
+            .clone();
+        let _ = events.send(Event::Message(message));
+    }
+
+    async fn call_tool(
+        &self,
+        tool_call: ToolCall,
+        events: &mpsc::UnboundedSender<Event>,
+    ) -> ToolResult {
+        let decision = self.ask_permission(&tool_call, events).await;
+        let (content, is_error) = match decision {
+            Decision::Allow => match self.tools.iter().find(|tool| tool.name() == tool_call.name) {
+                Some(tool) => match tool.call(tool_call.input).await {
+                    Ok(out) => (out, false),
+                    Err(e) => (e.to_string(), true),
+                },
+                None => (format!("unknown tool: {}", tool_call.name), true),
             },
             Decision::Deny(reason) => (reason, true),
         };
@@ -112,10 +113,24 @@ impl Agent {
         }
     }
 
-    async fn dispatch(&self, name: &str, input: Value) -> Result<String> {
-        match self.tools.iter().find(|t| t.name() == name) {
-            Some(tool) => tool.call(input).await,
-            None => Err(anyhow::anyhow!("unknown tool: {}", name)),
+    async fn ask_permission(
+        &self,
+        tool_call: &ToolCall,
+        events: &mpsc::UnboundedSender<Event>,
+    ) -> Decision {
+        let (reply, decision) = oneshot::channel();
+        if events
+            .send(Event::PermissionRequest {
+                call: tool_call.clone(),
+                reply,
+            })
+            .is_err()
+        {
+            return Decision::Deny("permission channel closed".into());
         }
+
+        decision
+            .await
+            .unwrap_or_else(|_| Decision::Deny("permission cancelled".into()))
     }
 }
