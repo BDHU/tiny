@@ -71,7 +71,6 @@ pub(crate) async fn run(
         }
     }
 
-    let _ = backend.commands.send(BackendCommand::Shutdown);
     Ok(())
 }
 
