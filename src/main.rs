@@ -3,6 +3,7 @@ use serde::Deserialize;
 use std::path::PathBuf;
 use tiny::{Agent, OpenAiProvider};
 
+mod backend;
 mod tools;
 mod tui;
 

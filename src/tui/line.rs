@@ -1,4 +1,4 @@
-use crate::tui::render::{preview, result_preview};
+use crate::tui::transcript::{preview, result_preview};
 use anyhow::Result;
 use tiny::{Agent, Decision, Event, Message};
 use tokio::io::{self, AsyncBufReadExt};
@@ -21,7 +21,7 @@ pub(crate) async fn line_mode(mut agent: Agent, model: String) -> Result<()> {
         loop {
             tokio::select! {
                 result = &mut turn => {
-                    result?;
+                    let _ = result;
                     break;
                 }
                 Some(event) = event_rx.recv() => handle_line_event(event),
@@ -66,5 +66,7 @@ fn handle_line_event(event: Event) {
                 call.name
             )));
         }
+        Event::TurnError(error) => eprintln!("Error: {error}"),
+        Event::TurnDone => {}
     }
 }

@@ -22,5 +22,4 @@ schemars = { version = "0.8", features = ["derive"] }
 async-trait = "0.1"
 anyhow = "1"
 ratatui = "0.29"
-crossterm = { version = "0.28", features = ["event-stream"] }
-futures = "0.3"
+crossterm = "0.28"
