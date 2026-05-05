@@ -8,8 +8,10 @@ pub(crate) async fn line_mode(mut agent: Agent, model: String) -> Result<()> {
     eprintln!("{model} line mode. Type a message and press Enter. Ctrl+D exits.");
 
     let mut lines = io::BufReader::new(io::stdin()).lines();
+    let mut saw_stdin = false;
 
     while let Some(input) = lines.next_line().await? {
+        saw_stdin = true;
         if input.trim().is_empty() {
             continue;
         }
@@ -31,6 +33,12 @@ pub(crate) async fn line_mode(mut agent: Agent, model: String) -> Result<()> {
         while let Ok(event) = event_rx.try_recv() {
             handle_line_event(event);
         }
+    }
+
+    if !saw_stdin {
+        anyhow::bail!(
+            "stdin is closed; run from an interactive terminal for the TUI, or pipe a prompt into line mode"
+        );
     }
 
     Ok(())
