@@ -1,8 +1,42 @@
-use crate::message::{Message, ToolCall, ToolResult};
-use crate::provider::Provider;
 use crate::tool::{boxed_tool, ErasedTool, Tool};
 use anyhow::Result;
+use async_trait::async_trait;
+use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
+
+#[derive(Debug, Clone)]
+pub struct ToolCall {
+    pub id: String,
+    pub name: String,
+    pub input: Value,
+}
+
+#[derive(Debug, Clone)]
+pub struct ToolResult {
+    pub id: String,
+    pub content: String,
+    pub is_error: bool,
+}
+
+#[derive(Debug, Clone)]
+pub enum Message {
+    User(String),
+    Assistant {
+        text: String,
+        tool_calls: Vec<ToolCall>,
+    },
+    Tool(ToolResult),
+}
+
+#[async_trait]
+pub trait Provider: Send + Sync {
+    async fn complete(
+        &self,
+        system: &str,
+        messages: &[Message],
+        tools: &[Box<dyn ErasedTool>],
+    ) -> Result<Message>;
+}
 
 #[derive(Debug, Clone)]
 pub enum Decision {

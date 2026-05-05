@@ -1,5 +1,4 @@
-use crate::message::{Message, ToolCall};
-use crate::provider::Provider;
+use crate::agent::{Message, Provider, ToolCall};
 use crate::tool::ErasedTool;
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
