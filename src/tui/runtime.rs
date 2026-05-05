@@ -1,5 +1,5 @@
 use crate::{
-    backend::{self, BackendCommand, BackendEvent},
+    backend::{self, Backend, BackendCommand, BackendEvent},
     tui::{
         reader::{self, ReaderEvent},
         state::{self, Effect, State, UiEvent},
@@ -10,62 +10,50 @@ use crate::{
 use anyhow::Result;
 use crossterm::event::{Event as CtEvent, KeyEventKind, MouseEventKind};
 use ratatui::{backend::CrosstermBackend, layout::Rect, Terminal};
+use std::time::Duration;
 use tiny::{Agent, Message};
 use tokio::sync::mpsc;
 
-pub(crate) async fn run(
-    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
-    agent: Agent,
-    model: String,
-) -> Result<()> {
+type Term = Terminal<CrosstermBackend<std::io::Stdout>>;
+
+pub(crate) async fn run(terminal: &mut Term, agent: Agent, model: String) -> Result<()> {
     let mut state = State::new(model);
     let mut backend = backend::spawn(agent);
     let (reader_tx, mut reader_rx) = mpsc::unbounded_channel();
     let _reader = reader::spawn(reader_tx);
-    let mut ticker = tokio::time::interval(std::time::Duration::from_millis(80));
+    let mut ticker = tokio::time::interval(Duration::from_millis(80));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     draw(terminal, &mut state)?;
     loop {
-        let redraw = tokio::select! {
+        let (events, redraw) = tokio::select! {
             _ = ticker.tick() => {
                 if state.turn.busy {
-                    state::update(&mut state, UiEvent::Tick);
-                    true
+                    (vec![UiEvent::Tick], true)
                 } else {
-                    false
+                    (Vec::new(), false)
                 }
             }
-
             Some(event) = backend.events.recv() => {
-                let effects = handle_backend_event(&mut state, event);
-                if !apply_effects(terminal, &backend.commands, effects)? {
-                    break;
+                let mut out = from_backend(event);
+                while let Ok(more) = backend.events.try_recv() {
+                    out.extend(from_backend(more));
                 }
-                true
+                (out, true)
             }
-
             Some(event) = reader_rx.recv() => {
-                let mut redraw = false;
-                let mut keep_running = true;
-                if !process_reader_event(terminal, &backend.commands, &mut state, event, &mut redraw)? {
-                    keep_running = false;
+                let mut out = from_reader(event);
+                while let Ok(more) = reader_rx.try_recv() {
+                    out.extend(from_reader(more));
                 }
-                while keep_running {
-                    let Ok(event) = reader_rx.try_recv() else {
-                        break;
-                    };
-                    if !process_reader_event(terminal, &backend.commands, &mut state, event, &mut redraw)? {
-                        keep_running = false;
-                    }
-                }
-                if !keep_running {
-                    break;
-                }
-                redraw
+                (out, true)
             }
+            else => break,
         };
 
+        if !drive(terminal, &backend, &mut state, events)? {
+            break;
+        }
         if redraw {
             draw(terminal, &mut state)?;
         }
@@ -74,127 +62,100 @@ pub(crate) async fn run(
     Ok(())
 }
 
-fn process_reader_event(
-    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
-    commands: &mpsc::UnboundedSender<BackendCommand>,
+fn drive(
+    terminal: &mut Term,
+    backend: &Backend,
     state: &mut State,
-    event: ReaderEvent,
-    redraw: &mut bool,
+    events: Vec<UiEvent>,
 ) -> Result<bool> {
-    let Some(effects) = handle_reader_event(state, event) else {
-        return Ok(true);
-    };
-    if !apply_effects(terminal, commands, effects)? {
-        return Ok(false);
+    for event in events {
+        if let Some(effect) = state::update(state, event) {
+            if !apply(terminal, backend, effect)? {
+                return Ok(false);
+            }
+        }
     }
-    *redraw = true;
     Ok(true)
 }
 
-fn draw(
-    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
-    state: &mut State,
-) -> Result<()> {
-    refresh_viewport(terminal, state)?;
+fn apply(terminal: &mut Term, backend: &Backend, effect: Effect) -> Result<bool> {
+    match effect {
+        Effect::Quit => Ok(false),
+        Effect::Submit(input) => {
+            let _ = backend.commands.send(BackendCommand::Submit(input));
+            Ok(true)
+        }
+        Effect::ReplyPermission { id, decision } => {
+            let _ = backend
+                .commands
+                .send(BackendCommand::PermissionDecision { id, decision });
+            Ok(true)
+        }
+        Effect::Redraw => {
+            terminal.clear()?;
+            Ok(true)
+        }
+    }
+}
+
+fn draw(terminal: &mut Term, state: &mut State) -> Result<()> {
+    let size = terminal.size()?;
+    let area = view::message_area(Rect::new(0, 0, size.width, size.height));
+    state::update(
+        state,
+        UiEvent::Viewport {
+            width: area.width,
+            height: area.height,
+        },
+    );
     terminal.draw(|f| view::ui(f, state))?;
     Ok(())
 }
 
-fn refresh_viewport(
-    terminal: &Terminal<CrosstermBackend<std::io::Stdout>>,
-    state: &mut State,
-) -> Result<()> {
-    let size = terminal.size()?;
-    let area = Rect::new(0, 0, size.width, size.height);
-    let message_area = view::message_area(area);
-    state::update(
-        state,
-        UiEvent::Viewport {
-            width: message_area.width,
-            height: message_area.height,
-        },
-    );
-    Ok(())
+fn from_backend(event: BackendEvent) -> Vec<UiEvent> {
+    match event {
+        // The agent records the user message as the first event of every turn —
+        // we already showed it locally on Enter, so suppress the duplicate.
+        BackendEvent::Message(Message::User(_)) => Vec::new(),
+        BackendEvent::Message(Message::Assistant { text, tool_calls }) => {
+            let mut out = Vec::new();
+            if !text.is_empty() {
+                out.push(UiEvent::Entry(Entry::Assistant(text)));
+            }
+            out.extend(tool_calls.into_iter().map(|c| {
+                UiEvent::Entry(Entry::ToolCall {
+                    name: c.name,
+                    args: c.input,
+                })
+            }));
+            out
+        }
+        BackendEvent::Message(Message::Tool(result)) => vec![UiEvent::Entry(Entry::ToolResult {
+            content: result.content,
+            is_error: result.is_error,
+        })],
+        BackendEvent::PermissionRequest { id, call } => {
+            vec![UiEvent::PermissionRequest { id, call }]
+        }
+        BackendEvent::TurnStarted => vec![UiEvent::TurnStarted],
+        BackendEvent::TurnError(error) => vec![UiEvent::TurnError(error)],
+        BackendEvent::TurnDone => vec![UiEvent::TurnDone],
+    }
 }
 
-fn handle_reader_event(state: &mut State, event: ReaderEvent) -> Option<Vec<Effect>> {
+fn from_reader(event: ReaderEvent) -> Vec<UiEvent> {
     match event {
         ReaderEvent::Terminal(CtEvent::Key(key)) if key.kind == KeyEventKind::Press => {
-            Some(state::update(state, UiEvent::Key(key)))
+            vec![UiEvent::Key(key)]
         }
-        ReaderEvent::Terminal(CtEvent::Paste(text)) => {
-            Some(state::update(state, UiEvent::Paste(text)))
-        }
+        ReaderEvent::Terminal(CtEvent::Paste(text)) => vec![UiEvent::Paste(text)],
         ReaderEvent::Terminal(CtEvent::Mouse(mouse)) => match mouse.kind {
-            MouseEventKind::ScrollUp => Some(state::update(state, UiEvent::Scroll(-3))),
-            MouseEventKind::ScrollDown => Some(state::update(state, UiEvent::Scroll(3))),
-            _ => None,
+            MouseEventKind::ScrollUp => vec![UiEvent::Scroll(-3)],
+            MouseEventKind::ScrollDown => vec![UiEvent::Scroll(3)],
+            _ => Vec::new(),
         },
-        ReaderEvent::Terminal(CtEvent::Resize(_, _)) => Some(Vec::new()),
-        ReaderEvent::Terminal(_) => None,
-        ReaderEvent::Error(error) => {
-            Some(state::update(state, UiEvent::Entry(Entry::Error(error))))
-        }
-    }
-}
-
-fn handle_backend_event(state: &mut State, event: BackendEvent) -> Vec<Effect> {
-    match event {
-        BackendEvent::Message(Message::User(_)) => Vec::new(),
-        BackendEvent::Message(message) => {
-            for entry in entries_from_message(&message) {
-                state::update(state, UiEvent::Entry(entry));
-            }
-            Vec::new()
-        }
-        BackendEvent::PermissionRequest { id, call } => {
-            state::update(state, UiEvent::PermissionRequest { id, call })
-        }
-        BackendEvent::TurnStarted => state::update(state, UiEvent::TurnStarted),
-        BackendEvent::TurnError(error) => state::update(state, UiEvent::TurnError(error)),
-        BackendEvent::TurnDone => state::update(state, UiEvent::TurnDone),
-    }
-}
-
-fn apply_effects(
-    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
-    commands: &mpsc::UnboundedSender<BackendCommand>,
-    effects: Vec<Effect>,
-) -> Result<bool> {
-    for effect in effects {
-        match effect {
-            Effect::Quit => return Ok(false),
-            Effect::Submit(input) => {
-                let _ = commands.send(BackendCommand::Submit(input));
-            }
-            Effect::ReplyPermission { id, decision } => {
-                let _ = commands.send(BackendCommand::PermissionDecision { id, decision });
-            }
-            Effect::Redraw => {
-                terminal.clear()?;
-            }
-        }
-    }
-    Ok(true)
-}
-
-fn entries_from_message(message: &Message) -> Vec<Entry> {
-    match message {
-        Message::User(text) => vec![Entry::User(text.clone())],
-        Message::Assistant { text, tool_calls } => {
-            let mut entries = Vec::new();
-            if !text.is_empty() {
-                entries.push(Entry::Assistant(text.clone()));
-            }
-            entries.extend(tool_calls.iter().map(|call| Entry::ToolCall {
-                name: call.name.clone(),
-                args: call.input.clone(),
-            }));
-            entries
-        }
-        Message::Tool(result) => vec![Entry::ToolResult {
-            content: result.content.clone(),
-            is_error: result.is_error,
-        }],
+        ReaderEvent::Terminal(CtEvent::Resize(_, _)) => Vec::new(),
+        ReaderEvent::Terminal(_) => Vec::new(),
+        ReaderEvent::Error(error) => vec![UiEvent::Entry(Entry::Error(error))],
     }
 }

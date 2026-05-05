@@ -1,7 +1,5 @@
-use crate::{
-    backend::PermissionId,
-    tui::transcript::{Entry, Transcript},
-};
+use crate::backend::PermissionId;
+use crate::tui::transcript::{Entry, Transcript};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::time::Instant;
 use tiny::{Decision, ToolCall};
@@ -19,6 +17,7 @@ pub(crate) struct ScrollState {
     content_height: u16,
 }
 
+#[derive(Default)]
 pub(crate) struct TurnState {
     pub(crate) busy: bool,
     pub(crate) started_at: Option<Instant>,
@@ -40,9 +39,15 @@ pub(crate) enum UiEvent {
     Key(KeyEvent),
     Paste(String),
     Scroll(i16),
-    Viewport { width: u16, height: u16 },
+    Viewport {
+        width: u16,
+        height: u16,
+    },
     Entry(Entry),
-    PermissionRequest { id: PermissionId, call: ToolCall },
+    PermissionRequest {
+        id: PermissionId,
+        call: ToolCall,
+    },
     TurnStarted,
     TurnError(String),
     TurnDone,
@@ -71,10 +76,7 @@ impl State {
             },
             tick: 0,
             model,
-            turn: TurnState {
-                busy: false,
-                started_at: None,
-            },
+            turn: TurnState::default(),
             queued: 0,
             pending: None,
         }
@@ -143,37 +145,38 @@ impl State {
     }
 
     fn clamp_scroll(&mut self) {
-        let max_scroll = self.max_scroll();
-        self.scroll.offset = self.scroll.offset.min(max_scroll);
-        if self.scroll.offset == max_scroll {
+        let max = self.max_scroll();
+        self.scroll.offset = self.scroll.offset.min(max);
+        if self.scroll.offset == max {
             self.scroll.follow_tail = true;
         }
     }
 
-    fn scroll_lines(&mut self, lines: i16) {
-        if lines < 0 {
-            self.scroll.offset = self.scroll.offset.saturating_sub(lines.unsigned_abs());
+    fn scroll_by(&mut self, delta: i16) {
+        if delta < 0 {
+            self.scroll.offset = self.scroll.offset.saturating_sub(delta.unsigned_abs());
             self.scroll.follow_tail = false;
         } else {
-            self.scroll.offset = self.scroll.offset.saturating_add(lines as u16);
+            self.scroll.offset = self.scroll.offset.saturating_add(delta as u16);
             self.clamp_scroll();
         }
     }
+
+    fn begin_turn(&mut self) {
+        self.turn.busy = true;
+        self.turn.started_at = Some(Instant::now());
+    }
 }
 
-pub(crate) fn update(state: &mut State, event: UiEvent) -> Vec<Effect> {
+pub(crate) fn update(state: &mut State, event: UiEvent) -> Option<Effect> {
     match event {
-        UiEvent::Key(key) => handle_key(state, key),
+        UiEvent::Key(key) => return handle_key(state, key),
         UiEvent::Paste(text) => {
             if state.pending.is_none() {
                 state.insert_str(&text);
             }
-            Vec::new()
         }
-        UiEvent::Scroll(lines) => {
-            state.scroll_lines(lines);
-            Vec::new()
-        }
+        UiEvent::Scroll(lines) => state.scroll_by(lines),
         UiEvent::Viewport { width, height } => {
             state.transcript.resize(width);
             state.scroll.viewport_height = height;
@@ -186,57 +189,41 @@ pub(crate) fn update(state: &mut State, event: UiEvent) -> Vec<Effect> {
             } else {
                 state.clamp_scroll();
             }
-            Vec::new()
         }
         UiEvent::Entry(entry) => {
             state.transcript.push(entry);
             if state.scroll.follow_tail {
                 state.scroll_to_bottom();
             }
-            Vec::new()
         }
         UiEvent::PermissionRequest { id, call } => {
             state.pending = Some(PendingPermission { id, call });
-            Vec::new()
         }
         UiEvent::TurnStarted => {
             if !state.turn.busy && state.queued > 0 {
                 state.queued -= 1;
             }
-            state.turn.busy = true;
-            state.turn.started_at = Some(Instant::now());
-            Vec::new()
+            state.begin_turn();
         }
-        UiEvent::TurnError(error) => {
-            state.transcript.push(Entry::Error(error));
-            Vec::new()
-        }
+        UiEvent::TurnError(error) => state.transcript.push(Entry::Error(error)),
         UiEvent::TurnDone => {
             state.turn.busy = false;
             state.turn.started_at = None;
-            Vec::new()
         }
-        UiEvent::Tick => {
-            state.tick = state.tick.wrapping_add(1);
-            Vec::new()
-        }
+        UiEvent::Tick => state.tick = state.tick.wrapping_add(1),
     }
+    None
 }
 
-fn handle_key(state: &mut State, key: KeyEvent) -> Vec<Effect> {
+fn handle_key(state: &mut State, key: KeyEvent) -> Option<Effect> {
     if state.pending.is_some() {
         return handle_permission_key(state, key);
     }
 
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
-        KeyCode::Char('d') | KeyCode::Char('c')
-            if key.modifiers.contains(KeyModifiers::CONTROL) =>
-        {
-            vec![Effect::Quit]
-        }
-        KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            vec![Effect::Redraw]
-        }
+        KeyCode::Char('d') | KeyCode::Char('c') if ctrl => Some(Effect::Quit),
+        KeyCode::Char('l') if ctrl => Some(Effect::Redraw),
         KeyCode::Enter if !state.input.trim().is_empty() => {
             let input = state.clear_input();
             state.transcript.push(Entry::User(input.clone()));
@@ -244,78 +231,64 @@ fn handle_key(state: &mut State, key: KeyEvent) -> Vec<Effect> {
             if state.turn.busy {
                 state.queued += 1;
             } else {
-                state.turn.busy = true;
-                state.turn.started_at = Some(Instant::now());
+                state.begin_turn();
             }
-            vec![Effect::Submit(input)]
+            Some(Effect::Submit(input))
         }
         KeyCode::Char(c) => {
             state.insert_char(c);
-            Vec::new()
+            None
         }
         KeyCode::Backspace => {
             state.backspace();
-            Vec::new()
+            None
         }
         KeyCode::Left => {
             state.move_left();
-            Vec::new()
+            None
         }
         KeyCode::Right => {
             state.move_right();
-            Vec::new()
+            None
         }
         KeyCode::Esc => {
             state.clear_input();
-            Vec::new()
+            None
         }
         KeyCode::PageUp => {
-            state.scroll.offset = state.scroll.offset.saturating_sub(10);
-            state.scroll.follow_tail = false;
-            Vec::new()
+            state.scroll_by(-10);
+            None
         }
         KeyCode::PageDown => {
-            state.scroll.offset = state.scroll.offset.saturating_add(10);
-            state.clamp_scroll();
-            Vec::new()
+            state.scroll_by(10);
+            None
         }
         KeyCode::Up => {
-            state.scroll.offset = state.scroll.offset.saturating_sub(1);
-            state.scroll.follow_tail = false;
-            Vec::new()
+            state.scroll_by(-1);
+            None
         }
         KeyCode::Down => {
-            state.scroll.offset = state.scroll.offset.saturating_add(1);
-            state.clamp_scroll();
-            Vec::new()
+            state.scroll_by(1);
+            None
         }
-        _ => Vec::new(),
+        _ => None,
     }
 }
 
-fn handle_permission_key(state: &mut State, key: KeyEvent) -> Vec<Effect> {
+fn handle_permission_key(state: &mut State, key: KeyEvent) -> Option<Effect> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let decision = match key.code {
-        KeyCode::Char('y') | KeyCode::Char('Y') => Some(Decision::Allow),
+        KeyCode::Char('y') | KeyCode::Char('Y') => Decision::Allow,
         KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-            Some(Decision::Deny("denied by user".into()))
+            Decision::Deny("denied by user".into())
         }
-        KeyCode::Char('c') | KeyCode::Char('d')
-            if key.modifiers.contains(KeyModifiers::CONTROL) =>
-        {
-            return vec![Effect::Quit];
-        }
-        _ => None,
+        KeyCode::Char('c') | KeyCode::Char('d') if ctrl => return Some(Effect::Quit),
+        _ => return None,
     };
 
-    match (state.pending.take(), decision) {
-        (Some(pending), Some(decision)) => vec![Effect::ReplyPermission {
-            id: pending.id,
-            decision,
-        }],
-        (pending, None) => {
-            state.pending = pending;
-            Vec::new()
-        }
-        (None, _) => Vec::new(),
-    }
+    let pending = state.pending.take()?;
+    Some(Effect::ReplyPermission {
+        id: pending.id,
+        decision,
+    })
 }
