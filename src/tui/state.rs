@@ -1,4 +1,6 @@
 use crate::backend::PermissionId;
+use crate::tui::input::InputBuffer;
+use crate::tui::scroll::ScrollState;
 use crate::tui::transcript::{Entry, Transcript};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::time::Instant;
@@ -10,26 +12,23 @@ pub(crate) struct PendingPermission {
 }
 
 #[derive(Default)]
-pub(crate) struct ScrollState {
-    pub(crate) offset: u16,
-    pub(crate) follow_tail: bool,
-    viewport_height: u16,
-    content_height: u16,
-}
-
-#[derive(Default)]
 pub(crate) struct TurnState {
     pub(crate) busy: bool,
     pub(crate) started_at: Option<Instant>,
 }
 
+pub(crate) struct SessionInfo {
+    pub(crate) model: String,
+    pub(crate) directory: String,
+    pub(crate) directory_label: String,
+}
+
 pub(crate) struct State {
-    pub(crate) input: String,
-    cursor: usize,
+    pub(crate) input: InputBuffer,
     pub(crate) transcript: Transcript,
     pub(crate) scroll: ScrollState,
     pub(crate) tick: usize,
-    pub(crate) model: String,
+    pub(crate) session: SessionInfo,
     pub(crate) turn: TurnState,
     pub(crate) queued: usize,
     pub(crate) pending: Option<PendingPermission>,
@@ -39,15 +38,9 @@ pub(crate) enum UiEvent {
     Key(KeyEvent),
     Paste(String),
     Scroll(i16),
-    Viewport {
-        width: u16,
-        height: u16,
-    },
+    Viewport { width: u16, height: u16 },
     Entry(Entry),
-    PermissionRequest {
-        id: PermissionId,
-        call: ToolCall,
-    },
+    PermissionRequest { id: PermissionId, call: ToolCall },
     TurnStarted,
     TurnError(String),
     TurnDone,
@@ -67,104 +60,68 @@ pub(crate) enum Effect {
 impl State {
     pub(crate) fn new(model: String) -> Self {
         Self {
-            input: String::new(),
-            cursor: 0,
+            input: InputBuffer::default(),
             transcript: Transcript::default(),
-            scroll: ScrollState {
-                follow_tail: true,
-                ..ScrollState::default()
-            },
+            scroll: ScrollState::following_tail(),
             tick: 0,
-            model,
+            session: SessionInfo::new(model),
             turn: TurnState::default(),
             queued: 0,
             pending: None,
         }
     }
 
-    pub(crate) fn cursor_column(&self) -> u16 {
-        self.input[..self.cursor].chars().count() as u16
-    }
-
-    fn clear_input(&mut self) -> String {
-        self.cursor = 0;
-        std::mem::take(&mut self.input)
-    }
-
-    fn insert_char(&mut self, c: char) {
-        self.input.insert(self.cursor, c);
-        self.cursor += c.len_utf8();
-    }
-
-    fn insert_str(&mut self, s: &str) {
-        let cleaned: String = s
-            .chars()
-            .map(|c| if c.is_control() { ' ' } else { c })
-            .collect();
-        self.input.insert_str(self.cursor, &cleaned);
-        self.cursor += cleaned.len();
-    }
-
-    fn backspace(&mut self) {
-        if self.cursor == 0 {
-            return;
-        }
-        self.move_left();
-        self.input.remove(self.cursor);
-    }
-
-    fn move_left(&mut self) {
-        if self.cursor == 0 {
-            return;
-        }
-        self.cursor -= 1;
-        while !self.input.is_char_boundary(self.cursor) {
-            self.cursor -= 1;
-        }
-    }
-
-    fn move_right(&mut self) {
-        if self.cursor >= self.input.len() {
-            return;
-        }
-        self.cursor += 1;
-        while !self.input.is_char_boundary(self.cursor) {
-            self.cursor += 1;
-        }
-    }
-
-    fn max_scroll(&self) -> u16 {
-        self.scroll
-            .content_height
-            .saturating_sub(self.scroll.viewport_height)
-    }
-
-    fn scroll_to_bottom(&mut self) {
-        self.scroll.offset = self.max_scroll();
-        self.scroll.follow_tail = true;
-    }
-
-    fn clamp_scroll(&mut self) {
-        let max = self.max_scroll();
-        self.scroll.offset = self.scroll.offset.min(max);
-        if self.scroll.offset == max {
-            self.scroll.follow_tail = true;
-        }
-    }
-
-    fn scroll_by(&mut self, delta: i16) {
-        if delta < 0 {
-            self.scroll.offset = self.scroll.offset.saturating_sub(delta.unsigned_abs());
-            self.scroll.follow_tail = false;
-        } else {
-            self.scroll.offset = self.scroll.offset.saturating_add(delta as u16);
-            self.clamp_scroll();
-        }
-    }
-
     fn begin_turn(&mut self) {
         self.turn.busy = true;
         self.turn.started_at = Some(Instant::now());
+    }
+
+    fn begin_or_queue_turn(&mut self) {
+        if self.turn.busy {
+            self.queued += 1;
+        } else {
+            self.begin_turn();
+        }
+    }
+
+    fn resize_viewport(&mut self, width: u16, height: u16) {
+        self.transcript.resize(width);
+        self.scroll.set_content_size(height, self.content_height());
+    }
+
+    fn content_height(&self) -> u16 {
+        let busy_height = if self.turn.busy { 2 } else { 0 };
+        self.transcript.height().saturating_add(busy_height)
+    }
+
+    fn push_entry(&mut self, entry: Entry) {
+        self.transcript.push(entry);
+        self.scroll.content_changed();
+    }
+
+    fn submit_input(&mut self) -> Effect {
+        let input = self.input.clear();
+        self.push_entry(Entry::User(input.clone()));
+        self.scroll.follow_tail();
+        self.begin_or_queue_turn();
+        Effect::Submit(input)
+    }
+}
+
+impl SessionInfo {
+    fn new(model: String) -> Self {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let directory = cwd.display().to_string();
+        let directory_label = cwd
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| directory.clone());
+
+        Self {
+            model,
+            directory,
+            directory_label,
+        }
     }
 }
 
@@ -173,29 +130,12 @@ pub(crate) fn update(state: &mut State, event: UiEvent) -> Option<Effect> {
         UiEvent::Key(key) => return handle_key(state, key),
         UiEvent::Paste(text) => {
             if state.pending.is_none() {
-                state.insert_str(&text);
+                state.input.insert_str(&text);
             }
         }
-        UiEvent::Scroll(lines) => state.scroll_by(lines),
-        UiEvent::Viewport { width, height } => {
-            state.transcript.resize(width);
-            state.scroll.viewport_height = height;
-            state.scroll.content_height = state.transcript.height();
-            if state.turn.busy {
-                state.scroll.content_height = state.scroll.content_height.saturating_add(2);
-            }
-            if state.scroll.follow_tail {
-                state.scroll_to_bottom();
-            } else {
-                state.clamp_scroll();
-            }
-        }
-        UiEvent::Entry(entry) => {
-            state.transcript.push(entry);
-            if state.scroll.follow_tail {
-                state.scroll_to_bottom();
-            }
-        }
+        UiEvent::Scroll(lines) => state.scroll.scroll_by(lines),
+        UiEvent::Viewport { width, height } => state.resize_viewport(width, height),
+        UiEvent::Entry(entry) => state.push_entry(entry),
         UiEvent::PermissionRequest { id, call } => {
             state.pending = Some(PendingPermission { id, call });
         }
@@ -205,7 +145,7 @@ pub(crate) fn update(state: &mut State, event: UiEvent) -> Option<Effect> {
             }
             state.begin_turn();
         }
-        UiEvent::TurnError(error) => state.transcript.push(Entry::Error(error)),
+        UiEvent::TurnError(error) => state.push_entry(Entry::Error(error)),
         UiEvent::TurnDone => {
             state.turn.busy = false;
             state.turn.started_at = None;
@@ -224,51 +164,41 @@ fn handle_key(state: &mut State, key: KeyEvent) -> Option<Effect> {
     match key.code {
         KeyCode::Char('d') | KeyCode::Char('c') if ctrl => Some(Effect::Quit),
         KeyCode::Char('l') if ctrl => Some(Effect::Redraw),
-        KeyCode::Enter if !state.input.trim().is_empty() => {
-            let input = state.clear_input();
-            state.transcript.push(Entry::User(input.clone()));
-            state.scroll.follow_tail = true;
-            if state.turn.busy {
-                state.queued += 1;
-            } else {
-                state.begin_turn();
-            }
-            Some(Effect::Submit(input))
-        }
+        KeyCode::Enter if !state.input.is_blank() => Some(state.submit_input()),
         KeyCode::Char(c) => {
-            state.insert_char(c);
+            state.input.insert_char(c);
             None
         }
         KeyCode::Backspace => {
-            state.backspace();
+            state.input.backspace();
             None
         }
         KeyCode::Left => {
-            state.move_left();
+            state.input.move_left();
             None
         }
         KeyCode::Right => {
-            state.move_right();
+            state.input.move_right();
             None
         }
         KeyCode::Esc => {
-            state.clear_input();
+            state.input.clear();
             None
         }
         KeyCode::PageUp => {
-            state.scroll_by(-10);
+            state.scroll.scroll_by(-10);
             None
         }
         KeyCode::PageDown => {
-            state.scroll_by(10);
+            state.scroll.scroll_by(10);
             None
         }
         KeyCode::Up => {
-            state.scroll_by(-1);
+            state.scroll.scroll_by(-1);
             None
         }
         KeyCode::Down => {
-            state.scroll_by(1);
+            state.scroll.scroll_by(1);
             None
         }
         _ => None,

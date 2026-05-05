@@ -30,7 +30,6 @@ fn layout(area: Rect) -> [Rect; 3] {
 }
 
 fn intro_lines(state: &State) -> Vec<Line<'static>> {
-    let cwd = std::env::current_dir().unwrap_or_default();
     let dim = Style::default().fg(theme::DIM);
     vec![
         Line::default(),
@@ -51,12 +50,12 @@ fn intro_lines(state: &State) -> Vec<Line<'static>> {
         Line::from(vec![
             Span::raw(theme::GUTTER),
             Span::styled("model:     ", dim),
-            Span::raw(state.model.clone()),
+            Span::raw(state.session.model.clone()),
         ]),
         Line::from(vec![
             Span::raw(theme::GUTTER),
             Span::styled("directory: ", dim),
-            Span::raw(cwd.display().to_string()),
+            Span::raw(state.session.directory.clone()),
         ]),
         Line::default(),
         Line::from(vec![
@@ -146,9 +145,9 @@ fn render_input(f: &mut ratatui::Frame, state: &State, area: Rect) {
     let prefix = "> ";
     let prefix_cols = prefix.chars().count() as u16;
     let inner_width = area.width.saturating_sub(2);
-    let cursor_col = prefix_cols + state.cursor_column();
+    let cursor_col = prefix_cols + state.input.cursor_column();
     let scroll_x = cursor_col.saturating_sub(inner_width.saturating_sub(1));
-    let text = format!("{prefix}{}", state.input);
+    let text = format!("{prefix}{}", state.input.as_str());
 
     f.render_widget(
         Paragraph::new(text).scroll((0, scroll_x)).block(
@@ -164,12 +163,6 @@ fn render_input(f: &mut ratatui::Frame, state: &State, area: Rect) {
 
 fn render_status(f: &mut ratatui::Frame, state: &State, area: Rect) {
     let msg_count = state.transcript.message_count();
-    let cwd = std::env::current_dir().unwrap_or_default();
-    let cwd_label = cwd
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| cwd.display().to_string());
-
     let queued = if state.queued == 0 {
         String::new()
     } else {
@@ -177,7 +170,7 @@ fn render_status(f: &mut ratatui::Frame, state: &State, area: Rect) {
     };
     let left = format!(
         " {} · {} msgs{} · {}",
-        state.model, msg_count, queued, cwd_label
+        state.session.model, msg_count, queued, state.session.directory_label
     );
     let right = "⏎ send · ^D quit ";
     let left_cols = left.chars().count() as u16;
