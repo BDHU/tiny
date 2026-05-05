@@ -1,5 +1,5 @@
 use crate::tool::{boxed_tool, ErasedTool, Tool};
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
@@ -91,7 +91,7 @@ impl Agent {
         user_input: impl Into<String>,
         events: &EventSender,
     ) -> Result<()> {
-        let result = self.send_inner(user_input.into(), events).await;
+        let result = self.run_turn(user_input.into(), events).await;
         if let Err(error) = &result {
             let _ = events.send(Event::TurnError(error.to_string()));
         }
@@ -99,7 +99,7 @@ impl Agent {
         result
     }
 
-    async fn send_inner(&mut self, user_input: String, events: &EventSender) -> Result<()> {
+    async fn run_turn(&mut self, user_input: String, events: &EventSender) -> Result<()> {
         self.record(Message::User(user_input), events);
 
         loop {
@@ -109,65 +109,53 @@ impl Agent {
                 .await?;
 
             let Message::Assistant { tool_calls, .. } = &assistant else {
-                return Err(anyhow::anyhow!("provider returned a non-assistant message"));
+                return Err(anyhow!("provider returned a non-assistant message"));
             };
-            let tool_calls = tool_calls.clone();
-
+            let calls = tool_calls.clone();
             self.record(assistant, events);
-
-            if tool_calls.is_empty() {
+            if calls.is_empty() {
                 return Ok(());
             }
-
-            for tool_call in tool_calls {
-                let result = self.call_tool(tool_call, events).await;
+            for call in calls {
+                let result = self.call_tool(call, events).await;
                 self.record(Message::Tool(result), events);
             }
         }
     }
 
     fn record(&mut self, message: Message, events: &EventSender) {
+        let _ = events.send(Event::Message(message.clone()));
         self.history.push(message);
-        let message = self
-            .history
-            .last()
-            .expect("message was just recorded")
-            .clone();
-        let _ = events.send(Event::Message(message));
     }
 
-    async fn call_tool(&self, tool_call: ToolCall, events: &EventSender) -> ToolResult {
-        let decision = self.ask_permission(&tool_call, events).await;
-        let (content, is_error) = match decision {
-            Decision::Allow => match self.tools.iter().find(|tool| tool.name() == tool_call.name) {
-                Some(tool) => match tool.call(tool_call.input).await {
+    async fn call_tool(&self, call: ToolCall, events: &EventSender) -> ToolResult {
+        let (content, is_error) = match self.ask_permission(&call, events).await {
+            Decision::Allow => match self.tools.iter().find(|t| t.name() == call.name) {
+                Some(tool) => match tool.call(call.input).await {
                     Ok(out) => (out, false),
                     Err(e) => (e.to_string(), true),
                 },
-                None => (format!("unknown tool: {}", tool_call.name), true),
+                None => (format!("unknown tool: {}", call.name), true),
             },
             Decision::Deny(reason) => (reason, true),
         };
 
         ToolResult {
-            id: tool_call.id,
+            id: call.id,
             content,
             is_error,
         }
     }
 
-    async fn ask_permission(&self, tool_call: &ToolCall, events: &EventSender) -> Decision {
+    async fn ask_permission(&self, call: &ToolCall, events: &EventSender) -> Decision {
         let (reply, decision) = oneshot::channel();
-        if events
-            .send(Event::PermissionRequest {
-                call: tool_call.clone(),
-                reply,
-            })
-            .is_err()
-        {
+        let request = Event::PermissionRequest {
+            call: call.clone(),
+            reply,
+        };
+        if events.send(request).is_err() {
             return Decision::Deny("permission channel closed".into());
         }
-
         decision
             .await
             .unwrap_or_else(|_| Decision::Deny("permission cancelled".into()))
