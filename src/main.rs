@@ -1,10 +1,9 @@
 use anyhow::{Context, Result};
-use async_trait::async_trait;
 use serde::Deserialize;
-use serde_json::Value;
 use std::path::PathBuf;
-use tiny::{Agent, Decision, OpenAiProvider, Tool};
+use tiny::{Agent, OpenAiProvider};
 
+mod tools;
 mod tui;
 
 #[derive(Deserialize, Default)]
@@ -29,31 +28,6 @@ fn load_config() -> Result<Config> {
     Ok(Config::default())
 }
 
-struct ReadTool;
-
-#[async_trait]
-impl Tool for ReadTool {
-    fn name(&self) -> &str {
-        "read"
-    }
-    fn description(&self) -> &str {
-        "Read the contents of a file from disk."
-    }
-    fn input_schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "path": { "type": "string", "description": "Path to the file" }
-            },
-            "required": ["path"]
-        })
-    }
-    async fn call(&self, input: Value) -> Result<String> {
-        let path = input["path"].as_str().context("missing path")?;
-        Ok(std::fs::read_to_string(path)?)
-    }
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     let cfg = load_config()?;
@@ -66,12 +40,8 @@ async fn main() -> Result<()> {
         .system
         .unwrap_or_else(|| "You are a helpful assistant.".to_string());
 
-    let mut agent = Agent::new(OpenAiProvider::new(api_key, model.clone()), system)
-        .with_permission(|name, _input| match name {
-            "read" => Decision::Allow,
-            other => Decision::Deny(format!("tool '{other}' is not permitted")),
-        });
-    agent.register_tool(ReadTool);
+    let mut agent = Agent::new(OpenAiProvider::new(api_key, model.clone()), system);
+    agent.register_tools(tools::default_tools());
 
     tui::run(agent, model).await
 }
