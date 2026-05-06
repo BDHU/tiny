@@ -1,12 +1,9 @@
-use std::time::Duration;
-
 use anyhow::{Context, Result};
+use scraper::{ElementRef, Html, Selector};
 
-use crate::html::decode_entities;
+use crate::web::client;
 
 const ENDPOINT: &str = "https://lite.duckduckgo.com/lite/";
-const USER_AGENT: &str = "Mozilla/5.0 (compatible; tiny-agent/0.1)";
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug)]
 pub struct SearchResult {
@@ -16,12 +13,8 @@ pub struct SearchResult {
 }
 
 pub async fn search(query: &str, limit: usize) -> Result<Vec<SearchResult>> {
-    let body = reqwest::Client::builder()
-        .timeout(REQUEST_TIMEOUT)
-        .build()
-        .context("build http client")?
+    let html = client()
         .post(ENDPOINT)
-        .header("User-Agent", USER_AGENT)
         .form(&[("q", query)])
         .send()
         .await
@@ -31,80 +24,88 @@ pub async fn search(query: &str, limit: usize) -> Result<Vec<SearchResult>> {
         .text()
         .await
         .context("read web search response")?;
-    Ok(parse(&body, limit))
+    Ok(parse(&html, limit))
 }
 
 fn parse(html: &str, limit: usize) -> Vec<SearchResult> {
-    let mut results = Vec::new();
-    let mut cursor = 0;
-    while results.len() < limit {
-        let Some(link_pos) = find_from(html, "result-link", cursor) else {
-            break;
-        };
-        let Some(tag_start) = html[..link_pos].rfind("<a ") else {
-            cursor = link_pos + 1;
-            continue;
-        };
-        let tag_end = match html[tag_start..].find('>') {
-            Some(i) => tag_start + i,
-            None => break,
-        };
-        let Some(url) = extract_attr(&html[tag_start..tag_end], "href") else {
-            cursor = tag_end + 1;
-            continue;
-        };
-        let body_end = match html[tag_end..].find("</a>") {
-            Some(i) => tag_end + i,
-            None => break,
-        };
-        let title = clean_text(&html[tag_end + 1..body_end]);
-        let snippet = extract_snippet(html, body_end).unwrap_or_default();
+    let document = Html::parse_document(html);
+    let link = Selector::parse("a.result-link").expect("valid result link selector");
+    let snippet = Selector::parse("td.result-snippet").expect("valid snippet selector");
 
-        results.push(SearchResult {
-            title,
-            url,
-            snippet,
-        });
-        cursor = body_end + 4;
+    document
+        .select(&link)
+        .take(limit)
+        .map(|a| SearchResult {
+            title: element_text(a),
+            url: normalize_url(a.value().attr("href").unwrap_or_default()),
+            snippet: snippet_after(a, &link, &snippet),
+        })
+        .collect()
+}
+
+fn normalize_url(href: &str) -> String {
+    match href {
+        h if h.starts_with("//") => format!("https:{h}"),
+        h if h.starts_with('/') => format!("https://duckduckgo.com{h}"),
+        h => h.to_string(),
     }
-    results
 }
 
-fn extract_snippet(html: &str, after: usize) -> Option<String> {
-    let marker = find_from(html, "result-snippet", after)?;
-    let open_end = after + html[marker..].find('>')?;
-    let close = open_end + html[open_end..].find("</td>")?;
-    Some(clean_text(&html[open_end + 1..close]))
+fn element_text(element: scraper::ElementRef<'_>) -> String {
+    element
+        .text()
+        .flat_map(str::split_whitespace)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
-fn find_from(haystack: &str, needle: &str, from: usize) -> Option<usize> {
-    haystack[from..].find(needle).map(|i| from + i)
-}
-
-fn extract_attr(tag: &str, name: &str) -> Option<String> {
-    let key = format!("{name}=");
-    let start = tag.find(&key)? + key.len();
-    let rest = &tag[start..];
-    let (quote, body) = match rest.as_bytes().first()? {
-        b'"' => ('"', &rest[1..]),
-        b'\'' => ('\'', &rest[1..]),
-        _ => return None,
+fn snippet_after(
+    link: ElementRef<'_>,
+    link_selector: &Selector,
+    snippet_selector: &Selector,
+) -> String {
+    let Some(row) = link
+        .parent()
+        .and_then(ElementRef::wrap)
+        .and_then(|cell| cell.parent().and_then(ElementRef::wrap))
+    else {
+        return String::new();
     };
-    let end = body.find(quote)?;
-    Some(decode_entities(&body[..end]))
-}
 
-fn clean_text(fragment: &str) -> String {
-    let mut out = String::with_capacity(fragment.len());
-    let mut in_tag = false;
-    for ch in fragment.chars() {
-        match ch {
-            '<' => in_tag = true,
-            '>' => in_tag = false,
-            c if !in_tag => out.push(c),
-            _ => {}
+    for node in row.next_siblings() {
+        let Some(element) = ElementRef::wrap(node) else {
+            continue;
+        };
+        if element.select(link_selector).next().is_some() {
+            break;
+        }
+        if let Some(snippet) = element.select(snippet_selector).next() {
+            return element_text(snippet);
         }
     }
-    decode_entities(out.split_whitespace().collect::<Vec<_>>().join(" ").as_str())
+
+    String::new()
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_duckduckgo_lite_results() {
+        let html = r#"
+            <table>
+              <tr><td><a rel="nofollow" href="https://rust-lang.org/" class='result-link'>Rust &amp; Language</a></td></tr>
+              <tr><td class='result-snippet'><b>Rust</b> is fast &amp; reliable.</td></tr>
+              <tr><td><a rel="nofollow" href="https://example.com/" class='result-link'>Other</a></td></tr>
+            </table>
+        "#;
+
+        let results = parse(html, 1);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "Rust & Language");
+        assert_eq!(results[0].url, "https://rust-lang.org/");
+        assert_eq!(results[0].snippet, "Rust is fast & reliable.");
+    }
+}
