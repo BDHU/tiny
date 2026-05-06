@@ -7,6 +7,7 @@ pub(crate) enum CommandAction {
     NewSession,
     OpenSessions,
     ShowHelp,
+    Quit,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,6 +56,12 @@ const COMMANDS: &[Command] = &[
         help: "list commands",
         idle_only: false,
         action: CommandAction::ShowHelp,
+    },
+    Command {
+        name: "quit",
+        help: "exit tiny",
+        idle_only: false,
+        action: CommandAction::Quit,
     },
 ];
 
@@ -139,7 +146,7 @@ mod tests {
             palette_matches(input).into_iter().map(|c| c.name).collect()
         };
 
-        assert_eq!(names("/"), vec!["new", "sessions", "help"]);
+        assert_eq!(names("/"), vec!["new", "sessions", "help", "quit"]);
         assert_eq!(names("/se"), vec!["sessions"]);
         assert_eq!(names("/h"), vec!["help"]);
         assert!(names("/x").is_empty());

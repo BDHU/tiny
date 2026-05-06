@@ -137,6 +137,7 @@ impl State {
                 self.push_entry(Entry::Assistant(commands::help_text()));
                 None
             }
+            Ok(commands::CommandAction::Quit) => Some(Effect::Quit),
             Err(error) => {
                 self.push_entry(Entry::Error(error.to_string()));
                 None
@@ -238,7 +239,7 @@ fn handle_key(state: &mut State, key: KeyEvent) -> Option<Effect> {
 
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
-        KeyCode::Char('d') | KeyCode::Char('c') if ctrl => Some(Effect::Quit),
+        KeyCode::Char('c') if ctrl => Some(Effect::Quit),
         KeyCode::Char('l') if ctrl => Some(Effect::Redraw),
         KeyCode::Up if commands::palette_active(state.input.as_str()) => {
             move_palette(state, -1);
@@ -334,7 +335,7 @@ fn run_palette_selection(state: &mut State) -> Option<Effect> {
 fn handle_picker_key(state: &mut State, key: KeyEvent) -> Option<Effect> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
-        KeyCode::Char('c') | KeyCode::Char('d') if ctrl => Some(Effect::Quit),
+        KeyCode::Char('c') if ctrl => Some(Effect::Quit),
         KeyCode::Up => {
             if let Some(picker) = state.picker.as_mut() {
                 picker.move_by(-1);
@@ -367,7 +368,7 @@ fn handle_permission_key(state: &mut State, key: KeyEvent) -> Option<Effect> {
         KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
             Decision::Deny("denied by user".into())
         }
-        KeyCode::Char('c') | KeyCode::Char('d') if ctrl => return Some(Effect::Quit),
+        KeyCode::Char('c') if ctrl => return Some(Effect::Quit),
         _ => return None,
     };
 

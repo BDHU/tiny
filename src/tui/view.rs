@@ -365,7 +365,7 @@ fn render_status(f: &mut ratatui::Frame, state: &State, area: Rect) {
         " {} · {} msgs{} · {}",
         state.session.model, msg_count, queued, state.session.directory_label
     );
-    let right = "⏎ send · ^D quit ";
+    let right = "⏎ send · /quit ";
     let left_cols = left.chars().count() as u16;
     let right_cols = right.chars().count() as u16;
     let pad = area
