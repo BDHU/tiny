@@ -4,7 +4,6 @@ use ratatui::{
     text::{Line, Span},
 };
 use serde_json::Value;
-use std::collections::HashSet;
 use tiny::Message;
 
 pub(crate) enum Entry {
@@ -20,9 +19,6 @@ const COLLAPSED_TOOL_RESULT_LINES: usize = 3;
 #[derive(Default)]
 pub(crate) struct Transcript {
     entries: Vec<Entry>,
-    // Indices of entries (currently only ToolResult) the user has expanded.
-    // Stable across push() — reset on clear().
-    expanded: HashSet<usize>,
     lines: Vec<Line<'static>>,
     width: u16,
 }
@@ -60,25 +56,11 @@ impl Transcript {
 
     pub(crate) fn clear(&mut self) {
         self.entries.clear();
-        self.expanded.clear();
         self.relayout();
     }
 
     pub(crate) fn line_at(&self, index: usize) -> Option<Line<'static>> {
         self.lines.get(index).cloned()
-    }
-
-    pub(crate) fn last_tool_result_index(&self) -> Option<usize> {
-        self.entries
-            .iter()
-            .rposition(|entry| matches!(entry, Entry::ToolResult { .. }))
-    }
-
-    pub(crate) fn toggle_expanded(&mut self, index: usize) {
-        if !self.expanded.insert(index) {
-            self.expanded.remove(&index);
-        }
-        self.relayout();
     }
 
     fn relayout(&mut self) {
@@ -87,8 +69,8 @@ impl Transcript {
             return;
         }
 
-        for (index, entry) in self.entries.iter().enumerate() {
-            for line in render_entry(index, entry, &self.expanded) {
+        for entry in self.entries.iter() {
+            for line in render_entry(entry) {
                 wrap_line(line, self.width, &mut self.lines);
             }
         }
@@ -128,17 +110,7 @@ pub(crate) fn preview(text: &str, limit: usize) -> String {
     }
 }
 
-pub(crate) fn result_preview(content: &str) -> String {
-    let mut lines = content.lines();
-    let head = lines.by_ref().take(2).collect::<Vec<_>>().join(" | ");
-    if lines.next().is_some() {
-        format!("{head} ...")
-    } else {
-        head
-    }
-}
-
-fn render_entry(index: usize, entry: &Entry, expanded: &HashSet<usize>) -> Vec<Line<'static>> {
+fn render_entry(entry: &Entry) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     match entry {
         Entry::User(text) => {
@@ -174,7 +146,7 @@ fn render_entry(index: usize, entry: &Entry, expanded: &HashSet<usize>) -> Vec<L
             ]));
         }
         Entry::ToolResult { content, is_error } => {
-            render_tool_result(content, *is_error, expanded.contains(&index), &mut lines);
+            render_tool_result(content, *is_error, &mut lines);
         }
         Entry::Error(text) => {
             lines.push(Line::default());
@@ -193,7 +165,7 @@ fn render_entry(index: usize, entry: &Entry, expanded: &HashSet<usize>) -> Vec<L
     lines
 }
 
-fn render_tool_result(content: &str, is_error: bool, expanded: bool, out: &mut Vec<Line<'static>>) {
+fn render_tool_result(content: &str, is_error: bool, out: &mut Vec<Line<'static>>) {
     let body_style = if is_error {
         Style::default().fg(theme::ERROR)
     } else {
@@ -202,12 +174,7 @@ fn render_tool_result(content: &str, is_error: bool, expanded: bool, out: &mut V
     let dim = Style::default().fg(theme::DIM);
 
     let body_lines: Vec<&str> = content.lines().map(|line| line.trim_end()).collect();
-    let total = body_lines.len();
-    let shown = if expanded {
-        total
-    } else {
-        total.min(COLLAPSED_TOOL_RESULT_LINES)
-    };
+    let shown = body_lines.len().min(COLLAPSED_TOOL_RESULT_LINES);
 
     for (i, line) in body_lines.iter().take(shown).enumerate() {
         let arrow = if i == 0 { "  -> " } else { "     " };
@@ -218,22 +185,14 @@ fn render_tool_result(content: &str, is_error: bool, expanded: bool, out: &mut V
         ]));
     }
 
-    let hint = if expanded && total > COLLAPSED_TOOL_RESULT_LINES {
-        Some("     tab to collapse".to_string())
-    } else if !expanded && total > shown {
-        Some(format!(
-            "     +{} more line{} · tab to expand",
-            total - shown,
-            if total - shown == 1 { "" } else { "s" }
-        ))
-    } else {
-        None
-    };
-
-    if let Some(hint) = hint {
+    if body_lines.len() > shown {
+        let more = body_lines.len() - shown;
         out.push(Line::from(vec![
             Span::raw(theme::GUTTER),
-            Span::styled(hint, dim),
+            Span::styled(
+                format!("     +{} more line{}", more, if more == 1 { "" } else { "s" }),
+                dim,
+            ),
         ]));
     }
 }

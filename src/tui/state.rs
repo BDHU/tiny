@@ -253,13 +253,6 @@ fn handle_key(state: &mut State, key: KeyEvent) -> Option<Effect> {
             complete_from_palette(state);
             None
         }
-        KeyCode::Tab if state.input.is_blank() => {
-            if let Some(idx) = state.transcript.last_tool_result_index() {
-                state.transcript.toggle_expanded(idx);
-                state.scroll.content_changed();
-            }
-            None
-        }
         KeyCode::Enter if commands::palette_active(state.input.as_str()) => {
             run_palette_selection(state)
         }
@@ -404,44 +397,4 @@ mod tests {
         assert_eq!(state.input.as_str(), "");
     }
 
-    #[test]
-    fn tab_toggles_last_tool_result_expansion() {
-        let mut state = State::new("test-model".into());
-        update(
-            &mut state,
-            UiEvent::Viewport {
-                width: 80,
-                height: 24,
-            },
-        );
-        let content = (0..10)
-            .map(|i| format!("line {i}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        update(
-            &mut state,
-            UiEvent::Entry(Entry::ToolResult {
-                content,
-                is_error: false,
-            }),
-        );
-
-        let collapsed_height = state.transcript.height();
-
-        update(
-            &mut state,
-            UiEvent::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
-        );
-        let expanded_height = state.transcript.height();
-        assert!(
-            expanded_height > collapsed_height,
-            "expected expansion to add lines (collapsed={collapsed_height}, expanded={expanded_height})"
-        );
-
-        update(
-            &mut state,
-            UiEvent::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
-        );
-        assert_eq!(state.transcript.height(), collapsed_height);
-    }
 }
