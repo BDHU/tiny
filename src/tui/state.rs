@@ -1,20 +1,16 @@
 use crate::backend::{BackendCommand, PermissionId};
 use crate::tui::commands;
 use crate::tui::input::InputBuffer;
+use crate::tui::picker::SessionPicker;
 use crate::tui::scroll::ScrollState;
 use crate::tui::transcript::{entries_from_message, Entry, Transcript};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::time::Instant;
-use tiny::{Decision, Message, SessionId, SessionMeta, ToolCall};
+use tiny::{Decision, Message, SessionMeta, ToolCall};
 
 pub(crate) struct PendingPermission {
     pub(crate) id: PermissionId,
     pub(crate) call: ToolCall,
-}
-
-pub(crate) struct SessionPicker {
-    pub(crate) sessions: Vec<SessionMeta>,
-    pub(crate) selected: usize,
 }
 
 #[derive(Default)]
@@ -177,10 +173,7 @@ impl State {
             return;
         }
 
-        self.picker = Some(SessionPicker {
-            sessions,
-            selected: 0,
-        });
+        self.picker = Some(SessionPicker::new(sessions));
     }
 }
 
@@ -343,36 +336,28 @@ fn handle_picker_key(state: &mut State, key: KeyEvent) -> Option<Effect> {
     match key.code {
         KeyCode::Char('c') | KeyCode::Char('d') if ctrl => Some(Effect::Quit),
         KeyCode::Up => {
-            move_picker(state, -1);
+            if let Some(picker) = state.picker.as_mut() {
+                picker.move_by(-1);
+            }
             None
         }
         KeyCode::Down => {
-            move_picker(state, 1);
+            if let Some(picker) = state.picker.as_mut() {
+                picker.move_by(1);
+            }
             None
         }
-        KeyCode::Enter => {
-            let picker = state.picker.take()?;
-            let selected = picker.selected.min(picker.sessions.len().saturating_sub(1));
-            let id: SessionId = picker.sessions[selected].id.clone();
-            Some(Effect::Backend(BackendCommand::SwitchSession(id)))
-        }
+        KeyCode::Enter => state
+            .picker
+            .take()?
+            .into_selected_id()
+            .map(|id| Effect::Backend(BackendCommand::SwitchSession(id))),
         KeyCode::Esc => {
             state.picker = None;
             None
         }
         _ => None,
     }
-}
-
-fn move_picker(state: &mut State, delta: i32) {
-    let Some(picker) = state.picker.as_mut() else {
-        return;
-    };
-    let len = picker.sessions.len() as i32;
-    if len == 0 {
-        return;
-    }
-    picker.selected = (picker.selected as i32 + delta).rem_euclid(len) as usize;
 }
 
 fn handle_permission_key(state: &mut State, key: KeyEvent) -> Option<Effect> {
