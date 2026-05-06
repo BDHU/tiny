@@ -1,14 +1,20 @@
-use crate::backend::PermissionId;
+use crate::backend::{BackendCommand, PermissionId};
+use crate::tui::commands;
 use crate::tui::input::InputBuffer;
 use crate::tui::scroll::ScrollState;
-use crate::tui::transcript::{Entry, Transcript};
+use crate::tui::transcript::{entries_from_message, Entry, Transcript};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::time::Instant;
-use tiny::{Decision, ToolCall};
+use tiny::{Decision, Message, SessionId, SessionMeta, ToolCall};
 
 pub(crate) struct PendingPermission {
     pub(crate) id: PermissionId,
     pub(crate) call: ToolCall,
+}
+
+pub(crate) struct SessionPicker {
+    pub(crate) sessions: Vec<SessionMeta>,
+    pub(crate) selected: usize,
 }
 
 #[derive(Default)]
@@ -21,6 +27,8 @@ pub(crate) struct SessionInfo {
     pub(crate) model: String,
     pub(crate) directory: String,
     pub(crate) directory_label: String,
+    pub(crate) id: Option<String>,
+    pub(crate) title: String,
 }
 
 pub(crate) struct State {
@@ -32,29 +40,38 @@ pub(crate) struct State {
     pub(crate) turn: TurnState,
     pub(crate) queued: usize,
     pub(crate) pending: Option<PendingPermission>,
+    pub(crate) palette_index: usize,
+    pub(crate) picker: Option<SessionPicker>,
 }
 
 pub(crate) enum UiEvent {
     Key(KeyEvent),
     Paste(String),
     Scroll(i16),
-    Viewport { width: u16, height: u16 },
+    Viewport {
+        width: u16,
+        height: u16,
+    },
     Entry(Entry),
-    PermissionRequest { id: PermissionId, call: ToolCall },
+    PermissionRequest {
+        id: PermissionId,
+        call: ToolCall,
+    },
     TurnStarted,
     TurnError(String),
     TurnDone,
     Tick,
+    SessionChanged {
+        meta: SessionMeta,
+        history: Vec<Message>,
+    },
+    SessionsListed(Result<Vec<SessionMeta>, String>),
 }
 
 pub(crate) enum Effect {
     Quit,
-    Submit(String),
-    ReplyPermission {
-        id: PermissionId,
-        decision: Decision,
-    },
     Redraw,
+    Backend(BackendCommand),
 }
 
 impl State {
@@ -68,6 +85,8 @@ impl State {
             turn: TurnState::default(),
             queued: 0,
             pending: None,
+            palette_index: 0,
+            picker: None,
         }
     }
 
@@ -99,12 +118,69 @@ impl State {
         self.scroll.content_changed();
     }
 
-    fn submit_input(&mut self) -> Effect {
+    fn submit_input(&mut self) -> Option<Effect> {
         let input = self.input.clear();
+        if let Some(rest) = input.strip_prefix('/') {
+            return self.dispatch_command(rest);
+        }
         self.push_entry(Entry::User(input.clone()));
         self.scroll.follow_tail();
         self.begin_or_queue_turn();
-        Effect::Submit(input)
+        Some(Effect::Backend(BackendCommand::Submit(input)))
+    }
+
+    fn dispatch_command(&mut self, input: &str) -> Option<Effect> {
+        match commands::dispatch(input, self.turn.busy) {
+            Ok(commands::CommandAction::NewSession) => {
+                Some(Effect::Backend(BackendCommand::NewSession))
+            }
+            Ok(commands::CommandAction::OpenSessions) => {
+                Some(Effect::Backend(BackendCommand::ListSessions))
+            }
+            Ok(commands::CommandAction::ShowHelp) => {
+                self.push_entry(Entry::Assistant(commands::help_text()));
+                None
+            }
+            Err(error) => {
+                self.push_entry(Entry::Error(error.to_string()));
+                None
+            }
+        }
+    }
+
+    fn replace_session(&mut self, meta: SessionMeta, history: Vec<Message>) {
+        self.session.id = Some(meta.id.0);
+        self.session.title = meta.title;
+        self.session.model = meta.model;
+        self.transcript.clear();
+        for message in history {
+            for entry in entries_from_message(message) {
+                self.transcript.push(entry);
+            }
+        }
+        self.scroll.follow_tail();
+    }
+
+    fn show_session_picker(&mut self, result: Result<Vec<SessionMeta>, String>) {
+        let sessions = match result {
+            Ok(sessions) => sessions,
+            Err(error) => {
+                self.push_entry(Entry::Error(format!("list sessions: {error}")));
+                return;
+            }
+        };
+
+        if sessions.is_empty() {
+            self.push_entry(Entry::Assistant(
+                "No saved sessions yet. Send a message to start one.".into(),
+            ));
+            return;
+        }
+
+        self.picker = Some(SessionPicker {
+            sessions,
+            selected: 0,
+        });
     }
 }
 
@@ -121,6 +197,8 @@ impl SessionInfo {
             model,
             directory,
             directory_label,
+            id: None,
+            title: String::new(),
         }
     }
 }
@@ -151,6 +229,8 @@ pub(crate) fn update(state: &mut State, event: UiEvent) -> Option<Effect> {
             state.turn.started_at = None;
         }
         UiEvent::Tick => state.tick = state.tick.wrapping_add(1),
+        UiEvent::SessionChanged { meta, history } => state.replace_session(meta, history),
+        UiEvent::SessionsListed(result) => state.show_session_picker(result),
     }
     None
 }
@@ -159,18 +239,38 @@ fn handle_key(state: &mut State, key: KeyEvent) -> Option<Effect> {
     if state.pending.is_some() {
         return handle_permission_key(state, key);
     }
+    if state.picker.is_some() {
+        return handle_picker_key(state, key);
+    }
 
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
         KeyCode::Char('d') | KeyCode::Char('c') if ctrl => Some(Effect::Quit),
         KeyCode::Char('l') if ctrl => Some(Effect::Redraw),
-        KeyCode::Enter if !state.input.is_blank() => Some(state.submit_input()),
+        KeyCode::Up if commands::palette_active(state.input.as_str()) => {
+            move_palette(state, -1);
+            None
+        }
+        KeyCode::Down if commands::palette_active(state.input.as_str()) => {
+            move_palette(state, 1);
+            None
+        }
+        KeyCode::Tab if commands::palette_active(state.input.as_str()) => {
+            complete_from_palette(state);
+            None
+        }
+        KeyCode::Enter if commands::palette_active(state.input.as_str()) => {
+            run_palette_selection(state)
+        }
+        KeyCode::Enter if !state.input.is_blank() => state.submit_input(),
         KeyCode::Char(c) => {
             state.input.insert_char(c);
+            state.palette_index = 0;
             None
         }
         KeyCode::Backspace => {
             state.input.backspace();
+            state.palette_index = 0;
             None
         }
         KeyCode::Left => {
@@ -183,6 +283,7 @@ fn handle_key(state: &mut State, key: KeyEvent) -> Option<Effect> {
         }
         KeyCode::Esc => {
             state.input.clear();
+            state.palette_index = 0;
             None
         }
         KeyCode::PageUp => {
@@ -205,6 +306,75 @@ fn handle_key(state: &mut State, key: KeyEvent) -> Option<Effect> {
     }
 }
 
+fn move_palette(state: &mut State, delta: i32) {
+    let count = commands::palette_matches(state.input.as_str()).len();
+    if count == 0 {
+        return;
+    }
+    let len = count as i32;
+    let next = (state.palette_index as i32 + delta).rem_euclid(len);
+    state.palette_index = next as usize;
+}
+
+fn complete_from_palette(state: &mut State) {
+    let matches = commands::palette_matches(state.input.as_str());
+    if matches.is_empty() {
+        return;
+    }
+    let selected = matches[state.palette_index.min(matches.len() - 1)];
+    state.input.clear();
+    state.input.insert_str(&format!("/{} ", selected.name));
+    state.palette_index = 0;
+}
+
+fn run_palette_selection(state: &mut State) -> Option<Effect> {
+    let matches = commands::palette_matches(state.input.as_str());
+    if matches.is_empty() {
+        return state.submit_input();
+    }
+    let selected_name = matches[state.palette_index.min(matches.len() - 1)].name;
+    state.input.clear();
+    state.palette_index = 0;
+    state.dispatch_command(selected_name)
+}
+
+fn handle_picker_key(state: &mut State, key: KeyEvent) -> Option<Effect> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::Char('c') | KeyCode::Char('d') if ctrl => Some(Effect::Quit),
+        KeyCode::Up => {
+            move_picker(state, -1);
+            None
+        }
+        KeyCode::Down => {
+            move_picker(state, 1);
+            None
+        }
+        KeyCode::Enter => {
+            let picker = state.picker.take()?;
+            let selected = picker.selected.min(picker.sessions.len().saturating_sub(1));
+            let id: SessionId = picker.sessions[selected].id.clone();
+            Some(Effect::Backend(BackendCommand::SwitchSession(id)))
+        }
+        KeyCode::Esc => {
+            state.picker = None;
+            None
+        }
+        _ => None,
+    }
+}
+
+fn move_picker(state: &mut State, delta: i32) {
+    let Some(picker) = state.picker.as_mut() else {
+        return;
+    };
+    let len = picker.sessions.len() as i32;
+    if len == 0 {
+        return;
+    }
+    picker.selected = (picker.selected as i32 + delta).rem_euclid(len) as usize;
+}
+
 fn handle_permission_key(state: &mut State, key: KeyEvent) -> Option<Effect> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let decision = match key.code {
@@ -217,8 +387,27 @@ fn handle_permission_key(state: &mut State, key: KeyEvent) -> Option<Effect> {
     };
 
     let pending = state.pending.take()?;
-    Some(Effect::ReplyPermission {
+    Some(Effect::Backend(BackendCommand::PermissionDecision {
         id: pending.id,
         decision,
-    })
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn enter_on_unmatched_slash_command_dispatches_error() {
+        let mut state = State::new("test-model".into());
+        state.input.insert_str("/nope");
+
+        let effect = update(
+            &mut state,
+            UiEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        );
+
+        assert!(effect.is_none());
+        assert_eq!(state.input.as_str(), "");
+    }
 }

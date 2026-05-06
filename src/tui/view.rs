@@ -1,9 +1,9 @@
-use crate::tui::{state::State, theme, transcript::preview};
+use crate::tui::{commands, state::State, theme, transcript::preview};
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Paragraph},
+    widgets::{Block, BorderType, Borders, Clear, Paragraph},
 };
 
 pub(crate) fn ui(f: &mut ratatui::Frame, state: &State) {
@@ -14,6 +14,8 @@ pub(crate) fn ui(f: &mut ratatui::Frame, state: &State) {
 
     render_input(f, state, input_area);
     render_status(f, state, status_area);
+    render_palette(f, state, input_area);
+    render_picker(f, state, input_area);
 }
 
 pub(crate) fn message_area(area: Rect) -> Rect {
@@ -159,6 +161,197 @@ fn render_input(f: &mut ratatui::Frame, state: &State, area: Rect) {
         area,
     );
     f.set_cursor_position((area.x + 1 + cursor_col - scroll_x, area.y + 1));
+}
+
+fn render_picker(f: &mut ratatui::Frame, state: &State, input_area: Rect) {
+    let Some(picker) = &state.picker else {
+        return;
+    };
+    if picker.sessions.is_empty() || input_area.width < 4 || input_area.y < 4 {
+        return;
+    }
+
+    let active = state.session.id.as_deref();
+    let selected = picker.selected.min(picker.sessions.len() - 1);
+
+    // Total chrome around rows: top border + footer + bottom border = 3.
+    let chrome: u16 = 3;
+    let max_rows = input_area.y.saturating_sub(chrome).min(20);
+    let row_count = (picker.sessions.len() as u16).min(max_rows).max(1);
+
+    // Scroll window so the selected row stays visible.
+    let window = row_count as usize;
+    let start = if selected >= window {
+        selected + 1 - window
+    } else {
+        0
+    };
+    let end = (start + window).min(picker.sessions.len());
+
+    // Layout inside borders: " >* " + title.  List is sorted recent-first,
+    // so position carries the freshness signal — no timestamp column.
+    const PREFIX_COLS: usize = 4;
+    let desired_title: usize = picker
+        .sessions
+        .iter()
+        .map(|s| s.title.chars().count().max("(untitled)".len()))
+        .max()
+        .unwrap_or(11);
+    // 2 borders + prefix + title + right padding (1)
+    let desired_width = (2 + PREFIX_COLS + desired_title + 1) as u16;
+    let width = desired_width.min(input_area.width).max(20);
+    let title_max = (width as usize).saturating_sub(2 + PREFIX_COLS + 1);
+    let height = row_count + chrome;
+    let y = input_area.y.saturating_sub(height);
+    let area = Rect {
+        x: input_area.x,
+        y,
+        width,
+        height,
+    };
+
+    let dim = Style::default().fg(theme::DIM);
+
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(row_count as usize + 1);
+    for i in start..end {
+        let meta = &picker.sessions[i];
+        let is_selected = i == selected;
+        let is_active = Some(meta.id.as_str()) == active;
+        lines.push(picker_line(meta, is_selected, is_active, title_max));
+    }
+    lines.push(Line::from(vec![Span::styled(
+        " ↑/↓ navigate  ⏎ resume  esc cancel",
+        dim,
+    )]));
+
+    f.render_widget(Clear, area);
+    f.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(theme::USER)),
+        ),
+        area,
+    );
+}
+
+fn picker_line(
+    meta: &tiny::SessionMeta,
+    selected: bool,
+    active: bool,
+    title_max: usize,
+) -> Line<'static> {
+    let marker_text = if selected { ">" } else { " " };
+    let active_text = if active { "*" } else { " " };
+    let title = if meta.title.is_empty() {
+        "(untitled)".to_string()
+    } else {
+        meta.title.clone()
+    };
+    let title = truncate(&title, title_max);
+    let row_style = if selected {
+        Style::default()
+            .fg(theme::USER)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+    Line::from(vec![
+        Span::styled(format!(" {marker_text}{active_text} "), row_style),
+        Span::styled(title, row_style),
+    ])
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    let count = s.chars().count();
+    if count <= max {
+        return s.to_string();
+    }
+    if max == 0 {
+        return String::new();
+    }
+    if max == 1 {
+        return "…".into();
+    }
+    let mut out: String = s.chars().take(max - 1).collect();
+    out.push('…');
+    out
+}
+
+fn render_palette(f: &mut ratatui::Frame, state: &State, input_area: Rect) {
+    if state.pending.is_some() || state.picker.is_some() {
+        return;
+    }
+    let matches = commands::palette_matches(state.input.as_str());
+    if matches.is_empty() {
+        return;
+    }
+
+    let selected = state.palette_index.min(matches.len() - 1);
+    let name_width = matches.iter().map(|c| c.name.len()).max().unwrap_or(0);
+    let help_width = matches.iter().map(|c| c.help.len()).max().unwrap_or(0);
+    // Inside borders: "   /name<pad>  help".  3 marker + 1 slash + name + 2 gap + help.
+    let prefix_cols = 3 + 1 + name_width + 2;
+    let desired_width = (2 + prefix_cols + help_width) as u16;
+    let width = desired_width.min(input_area.width).max(20);
+    let help_max = (width as usize).saturating_sub(2 + prefix_cols);
+    let height = (matches.len() as u16 + 2).min(input_area.y.max(1));
+    let y = input_area.y.saturating_sub(height);
+    let area = Rect {
+        x: input_area.x,
+        y,
+        width,
+        height,
+    };
+
+    let lines: Vec<Line<'static>> = matches
+        .iter()
+        .enumerate()
+        .map(|(i, cmd)| palette_line(cmd.name, cmd.help, name_width, help_max, i == selected))
+        .collect();
+
+    f.render_widget(Clear, area);
+    f.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(theme::DIM)),
+        ),
+        area,
+    );
+}
+
+fn palette_line(
+    name: &str,
+    help: &str,
+    name_width: usize,
+    help_max: usize,
+    selected: bool,
+) -> Line<'static> {
+    let name_pad = " ".repeat(name_width.saturating_sub(name.len()));
+    let marker_style = if selected {
+        Style::default()
+            .fg(theme::USER)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme::DIM)
+    };
+    let name_style = if selected {
+        Style::default()
+            .fg(theme::USER)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+    Line::from(vec![
+        Span::styled(if selected { " > " } else { "   " }, marker_style),
+        Span::styled(format!("/{name}"), name_style),
+        Span::raw(name_pad),
+        Span::raw("  "),
+        Span::styled(truncate(help, help_max), Style::default().fg(theme::DIM)),
+    ])
 }
 
 fn render_status(f: &mut ratatui::Frame, state: &State, area: Rect) {
