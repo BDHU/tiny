@@ -8,14 +8,18 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, Paragraph},
+    widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph},
 };
 
 pub(crate) fn ui(f: &mut ratatui::Frame, state: &State) {
     let [msg_area, input_area, status_area] = layout(f.area());
-    let lines = transcript_visible_lines(state, msg_area.height);
 
-    f.render_widget(Paragraph::new(lines), msg_area);
+    if state.transcript.is_empty() && !state.turn.busy {
+        render_intro(f, state, msg_area);
+    } else {
+        let lines = transcript_visible_lines(state, msg_area.height);
+        f.render_widget(Paragraph::new(lines), msg_area);
+    }
 
     render_input(f, state, input_area);
     render_status(f, state, status_area);
@@ -39,9 +43,7 @@ fn layout(area: Rect) -> [Rect; 3] {
 fn intro_lines(state: &State) -> Vec<Line<'static>> {
     let dim = Style::default().fg(theme::DIM);
     vec![
-        Line::default(),
         Line::from(vec![
-            Span::raw(theme::GUTTER),
             Span::styled(
                 ">_ ",
                 Style::default()
@@ -55,28 +57,44 @@ fn intro_lines(state: &State) -> Vec<Line<'static>> {
         ]),
         Line::default(),
         Line::from(vec![
-            Span::raw(theme::GUTTER),
             Span::styled("model:     ", dim),
             Span::raw(state.session.model.clone()),
         ]),
         Line::from(vec![
-            Span::raw(theme::GUTTER),
             Span::styled("directory: ", dim),
             Span::raw(state.session.directory.clone()),
         ]),
         Line::default(),
-        Line::from(vec![
-            Span::raw(theme::GUTTER),
-            Span::styled("Type a message and press ⏎ to begin.", dim),
-        ]),
+        Line::from(Span::styled(
+            "Type a message and press ⏎ to begin.",
+            dim,
+        )),
     ]
 }
 
-fn transcript_visible_lines(state: &State, height: u16) -> Vec<Line<'static>> {
-    if state.transcript.is_empty() && !state.turn.busy {
-        return intro_lines(state);
+fn render_intro(f: &mut ratatui::Frame, state: &State, area: Rect) {
+    let lines = intro_lines(state);
+    let content_width = lines.iter().map(|l| l.width()).max().unwrap_or(0) as u16;
+    let width = (content_width + 4).min(area.width);
+    let height = (lines.len() as u16 + 2).min(area.height.saturating_sub(1));
+    if width == 0 || height == 0 {
+        return;
     }
+    let box_area = Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width,
+        height,
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme::DIM))
+        .padding(Padding::horizontal(1));
+    f.render_widget(Paragraph::new(lines).block(block), box_area);
+}
 
+fn transcript_visible_lines(state: &State, height: u16) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let start = state.scroll.offset as usize;
     let end = start.saturating_add(height as usize);

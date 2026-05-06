@@ -39,8 +39,8 @@ pub(crate) fn from_reader(event: ReaderEvent) -> Vec<UiEvent> {
         }
         ReaderEvent::Terminal(CtEvent::Paste(text)) => vec![UiEvent::Paste(text)],
         ReaderEvent::Terminal(CtEvent::Mouse(mouse)) => match mouse.kind {
-            MouseEventKind::ScrollUp => vec![UiEvent::Scroll(-3)],
-            MouseEventKind::ScrollDown => vec![UiEvent::Scroll(3)],
+            MouseEventKind::ScrollUp => vec![UiEvent::Scroll(-1)],
+            MouseEventKind::ScrollDown => vec![UiEvent::Scroll(1)],
             _ => Vec::new(),
         },
         ReaderEvent::Terminal(CtEvent::Resize(_, _)) => Vec::new(),
