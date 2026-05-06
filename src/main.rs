@@ -2,12 +2,12 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tiny::{AgentConfig, OpenAiProvider};
+use tiny::{AgentConfig, ErasedTool, OpenAiProvider};
 
 mod backend;
-mod html;
 mod tools;
 mod tui;
+mod web;
 mod web_fetch;
 mod web_search;
 
@@ -41,14 +41,32 @@ async fn main() -> Result<()> {
         .or_else(|| std::env::var("OPENAI_API_KEY").ok())
         .context("set api_key in tiny.json or OPENAI_API_KEY in your environment")?;
     let model = cfg.model.unwrap_or_else(|| "gpt-4o-mini".to_string());
-    let system = cfg
-        .system
-        .unwrap_or_else(|| "You are a helpful assistant.".to_string());
+    let tools = tools::default_tools();
+    let system = cfg.system.unwrap_or_else(|| default_system_prompt(&tools));
 
     let config = Arc::new(
-        AgentConfig::new(OpenAiProvider::new(api_key, model.clone()), system)
-            .with_tools(tools::default_tools()),
+        AgentConfig::new(OpenAiProvider::new(api_key, model.clone()), system).with_tools(tools),
     );
 
     tui::run(config, model).await
+}
+
+fn default_system_prompt(tools: &[Box<dyn ErasedTool>]) -> String {
+    let tool_list: String = tools
+        .iter()
+        .map(|t| format!("- {}: {}\n", t.name(), t.description()))
+        .collect();
+    let cwd = std::env::current_dir()
+        .map(|p| format!("\nCurrent working directory: {}", p.display()))
+        .unwrap_or_default();
+    let date = chrono::Local::now().format("%Y-%m-%d");
+    format!(
+        "You are a coding assistant running inside tiny, a small agent harness. \
+You help by reading and editing files, running shell commands, and searching the web.\n\n\
+Available tools:\n{tool_list}\n\
+Guidelines:\n\
+- Be concise in your responses\n\
+- Show file paths clearly when working with files\n\
+{cwd}\nCurrent date: {date}\n"
+    )
 }
