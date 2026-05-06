@@ -7,7 +7,8 @@ use crossterm::{
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io::{stdin, stdout, IsTerminal};
-use tiny::Agent;
+use std::sync::Arc;
+use tiny::AgentConfig;
 
 struct TerminalSession(Terminal<CrosstermBackend<std::io::Stdout>>);
 
@@ -38,11 +39,11 @@ fn has_interactive_terminal() -> bool {
     stdin().is_terminal() && stdout().is_terminal()
 }
 
-pub async fn run(agent: Agent, model: String) -> Result<()> {
+pub async fn run(config: Arc<AgentConfig>, model: String) -> Result<()> {
     if !has_interactive_terminal() {
-        return line_mode(agent, model).await;
+        return line_mode(config, model).await;
     }
 
     let mut terminal = TerminalSession::enter()?;
-    runtime::run(&mut terminal.0, agent, model).await
+    runtime::run(&mut terminal.0, config, model).await
 }

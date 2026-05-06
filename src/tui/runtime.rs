@@ -1,5 +1,5 @@
 use crate::{
-    backend::{self, Backend, BackendCommand},
+    backend::{self, Backend},
     tui::{
         events, reader,
         state::{self, Effect, State, UiEvent},
@@ -8,15 +8,20 @@ use crate::{
 };
 use anyhow::Result;
 use ratatui::{backend::CrosstermBackend, layout::Rect, Terminal};
+use std::sync::Arc;
 use std::time::Duration;
-use tiny::Agent;
+use tiny::AgentConfig;
 use tokio::sync::mpsc;
 
 type Term = Terminal<CrosstermBackend<std::io::Stdout>>;
 
-pub(crate) async fn run(terminal: &mut Term, agent: Agent, model: String) -> Result<()> {
-    let mut state = State::new(model);
-    let mut backend = backend::spawn(agent);
+pub(crate) async fn run(
+    terminal: &mut Term,
+    config: Arc<AgentConfig>,
+    model: String,
+) -> Result<()> {
+    let mut state = State::new(model.clone());
+    let mut backend = backend::spawn(config, model);
     let (reader_tx, mut reader_rx) = mpsc::unbounded_channel();
     let _reader = reader::spawn(reader_tx);
     let mut ticker = tokio::time::interval(Duration::from_millis(80));
@@ -83,18 +88,12 @@ fn drive(
 fn apply(terminal: &mut Term, backend: &Backend, effect: Effect) -> Result<bool> {
     match effect {
         Effect::Quit => Ok(false),
-        Effect::Submit(input) => {
-            let _ = backend.commands.send(BackendCommand::Submit(input));
-            Ok(true)
-        }
-        Effect::ReplyPermission { id, decision } => {
-            let _ = backend
-                .commands
-                .send(BackendCommand::PermissionDecision { id, decision });
-            Ok(true)
-        }
         Effect::Redraw => {
             terminal.clear()?;
+            Ok(true)
+        }
+        Effect::Backend(cmd) => {
+            let _ = backend.commands.send(cmd);
             Ok(true)
         }
     }

@@ -1,12 +1,14 @@
 use crate::tui::transcript::{preview, result_preview};
 use anyhow::Result;
-use tiny::{Agent, Decision, Event, Message};
+use std::sync::Arc;
+use tiny::{Agent, AgentConfig, Decision, Event, Message};
 use tokio::io::{self, AsyncBufReadExt};
 use tokio::sync::mpsc;
 
-pub(crate) async fn line_mode(mut agent: Agent, model: String) -> Result<()> {
+pub(crate) async fn line_mode(config: Arc<AgentConfig>, model: String) -> Result<()> {
     eprintln!("{model} line mode. Type a message and press Enter. Ctrl+D exits.");
 
+    let mut agent = Agent::new(config, Vec::new());
     let mut lines = io::BufReader::new(io::stdin()).lines();
     let mut saw_stdin = false;
 
