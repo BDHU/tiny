@@ -4,6 +4,7 @@ use ratatui::{
     text::{Line, Span},
 };
 use serde_json::Value;
+use tiny::Message;
 
 pub(crate) enum Entry {
     User(String),
@@ -51,6 +52,11 @@ impl Transcript {
         self.relayout();
     }
 
+    pub(crate) fn clear(&mut self) {
+        self.entries.clear();
+        self.relayout();
+    }
+
     pub(crate) fn line_at(&self, index: usize) -> Option<Line<'static>> {
         self.lines.get(index).cloned()
     }
@@ -68,6 +74,27 @@ impl Transcript {
         }
 
         self.lines.push(Line::default());
+    }
+}
+
+pub(crate) fn entries_from_message(message: Message) -> Vec<Entry> {
+    match message {
+        Message::User(text) => vec![Entry::User(text)],
+        Message::Assistant { text, tool_calls } => {
+            let mut out = Vec::new();
+            if !text.is_empty() {
+                out.push(Entry::Assistant(text));
+            }
+            out.extend(tool_calls.into_iter().map(|call| Entry::ToolCall {
+                name: call.name,
+                args: call.input,
+            }));
+            out
+        }
+        Message::Tool(result) => vec![Entry::ToolResult {
+            content: result.content,
+            is_error: result.is_error,
+        }],
     }
 }
 
