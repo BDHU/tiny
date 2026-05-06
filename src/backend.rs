@@ -51,19 +51,13 @@ pub(crate) fn spawn(config: Arc<AgentConfig>, model: String) -> Backend {
     }
 }
 
+#[derive(Default)]
 struct Pending {
     map: HashMap<PermissionId, oneshot::Sender<Decision>>,
     next_id: PermissionId,
 }
 
 impl Pending {
-    fn new() -> Self {
-        Self {
-            map: HashMap::new(),
-            next_id: 0,
-        }
-    }
-
     fn register(&mut self, reply: oneshot::Sender<Decision>) -> PermissionId {
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
@@ -111,7 +105,7 @@ async fn run(
     mut commands: mpsc::UnboundedReceiver<BackendCommand>,
     events: mpsc::UnboundedSender<BackendEvent>,
 ) {
-    let mut pending = Pending::new();
+    let mut pending = Pending::default();
     let mut queue: VecDeque<String> = VecDeque::new();
     let mut active = Active::fresh(&config, &model);
     announce_session(&active, &events);
@@ -156,15 +150,9 @@ async fn next_input(
         match commands.recv().await? {
             BackendCommand::Submit(input) => return Some(input),
             BackendCommand::PermissionDecision { id, decision } => pending.resolve(id, decision),
-            BackendCommand::NewSession => {
-                handle_new_session(active, config, events);
-            }
-            BackendCommand::ListSessions => {
-                handle_list_sessions(events);
-            }
-            BackendCommand::SwitchSession(id) => {
-                handle_switch_session(active, config, &id, events);
-            }
+            BackendCommand::NewSession => handle_new_session(active, config, events),
+            BackendCommand::ListSessions => handle_list_sessions(events),
+            BackendCommand::SwitchSession(id) => handle_switch_session(active, config, &id, events),
         }
     }
 }

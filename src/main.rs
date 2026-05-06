@@ -6,6 +6,7 @@ use tiny::{AgentConfig, ErasedTool, OpenAiProvider};
 
 mod backend;
 mod tools;
+mod toolset;
 mod tui;
 mod web;
 mod web_fetch;

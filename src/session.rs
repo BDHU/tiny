@@ -16,13 +16,8 @@ pub struct SessionId(pub String);
 
 impl SessionId {
     pub fn generate() -> Self {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let stamp = format!("{now}");
-        let suffix = format!("{:04x}", (now as u64) & 0xffff);
-        Self(format!("{stamp}-{suffix}"))
+        let now = now_nanos();
+        Self(format!("{now}-{:04x}", (now as u64) & 0xffff))
     }
 
     pub fn as_str(&self) -> &str {
@@ -50,10 +45,7 @@ pub struct SessionMeta {
 
 impl Session {
     pub fn new(model: impl Into<String>) -> Self {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos().to_string())
-            .unwrap_or_default();
+        let now = now_nanos().to_string();
         Self {
             id: SessionId::generate(),
             created_at: now.clone(),
@@ -65,10 +57,7 @@ impl Session {
     }
 
     pub fn touch(&mut self) {
-        self.updated_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos().to_string())
-            .unwrap_or_default();
+        self.updated_at = now_nanos().to_string();
     }
 
     pub fn ensure_title(&mut self) {
@@ -143,6 +132,13 @@ fn sessions_dir() -> PathBuf {
 
 fn path_for(id: &SessionId) -> PathBuf {
     sessions_dir().join(format!("{}.json", id.as_str()))
+}
+
+fn now_nanos() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0)
 }
 
 fn title_from(text: &str) -> String {
