@@ -1,24 +1,26 @@
 use crate::tool::{boxed_tool, ErasedTool, Tool};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
     pub id: String,
     pub name: String,
     pub input: Value,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResult {
     pub id: String,
     pub content: String,
     pub is_error: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Message {
     User(String),
     Assistant {
@@ -56,34 +58,40 @@ pub enum Event {
 
 pub type EventSender = mpsc::UnboundedSender<Event>;
 
-pub struct Agent {
+pub struct AgentConfig {
     provider: Box<dyn Provider>,
     tools: Vec<Box<dyn ErasedTool>>,
     system: String,
-    pub history: Vec<Message>,
 }
 
-impl Agent {
+impl AgentConfig {
     pub fn new(provider: impl Provider + 'static, system: impl Into<String>) -> Self {
         Self {
             provider: Box::new(provider),
             tools: Vec::new(),
             system: system.into(),
-            history: Vec::new(),
         }
     }
 
-    pub fn register_tool(&mut self, tool: impl Tool + 'static) -> &mut Self {
+    pub fn with_tool(mut self, tool: impl Tool + 'static) -> Self {
         self.tools.push(boxed_tool(tool));
         self
     }
 
-    pub fn register_tools(
-        &mut self,
-        tools: impl IntoIterator<Item = Box<dyn ErasedTool>>,
-    ) -> &mut Self {
+    pub fn with_tools(mut self, tools: impl IntoIterator<Item = Box<dyn ErasedTool>>) -> Self {
         self.tools.extend(tools);
         self
+    }
+}
+
+pub struct Agent {
+    config: Arc<AgentConfig>,
+    pub history: Vec<Message>,
+}
+
+impl Agent {
+    pub fn new(config: Arc<AgentConfig>, history: Vec<Message>) -> Self {
+        Self { config, history }
     }
 
     pub async fn send(
@@ -104,8 +112,9 @@ impl Agent {
 
         loop {
             let assistant = self
+                .config
                 .provider
-                .complete(&self.system, &self.history, &self.tools)
+                .complete(&self.config.system, &self.history, &self.config.tools)
                 .await?;
 
             let Message::Assistant { tool_calls, .. } = &assistant else {
@@ -130,7 +139,7 @@ impl Agent {
 
     async fn call_tool(&self, call: ToolCall, events: &EventSender) -> ToolResult {
         let (content, is_error) = match self.ask_permission(&call, events).await {
-            Decision::Allow => match self.tools.iter().find(|t| t.name() == call.name) {
+            Decision::Allow => match self.config.tools.iter().find(|t| t.name() == call.name) {
                 Some(tool) => match tool.call(call.input).await {
                     Ok(out) => (out, false),
                     Err(e) => (e.to_string(), true),

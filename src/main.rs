@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::path::PathBuf;
-use tiny::{Agent, OpenAiProvider};
+use std::sync::Arc;
+use tiny::{AgentConfig, OpenAiProvider};
 
 mod backend;
 mod tools;
@@ -41,8 +42,10 @@ async fn main() -> Result<()> {
         .system
         .unwrap_or_else(|| "You are a helpful assistant.".to_string());
 
-    let mut agent = Agent::new(OpenAiProvider::new(api_key, model.clone()), system);
-    agent.register_tools(tools::default_tools());
+    let config = Arc::new(
+        AgentConfig::new(OpenAiProvider::new(api_key, model.clone()), system)
+            .with_tools(tools::default_tools()),
+    );
 
-    tui::run(agent, model).await
+    tui::run(config, model).await
 }
