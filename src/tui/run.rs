@@ -1,4 +1,4 @@
-use crate::tui::{line::line_mode, runtime};
+use crate::tui::runtime;
 use anyhow::Result;
 use crossterm::{
     event::{DisableBracketedPaste, EnableBracketedPaste},
@@ -14,10 +14,6 @@ struct TerminalSession(Terminal<CrosstermBackend<std::io::Stdout>>);
 
 impl TerminalSession {
     fn enter() -> Result<Self> {
-        if !has_interactive_terminal() {
-            anyhow::bail!("the TUI must be run in an interactive terminal");
-        }
-
         enable_raw_mode()?;
         execute!(stdout(), EnterAlternateScreen, EnableBracketedPaste)?;
         Ok(Self(Terminal::new(CrosstermBackend::new(stdout()))?))
@@ -35,13 +31,9 @@ impl Drop for TerminalSession {
     }
 }
 
-fn has_interactive_terminal() -> bool {
-    stdin().is_terminal() && stdout().is_terminal()
-}
-
 pub async fn run(config: Arc<AgentConfig>, model: String) -> Result<()> {
-    if !has_interactive_terminal() {
-        return line_mode(config, model).await;
+    if !stdin().is_terminal() || !stdout().is_terminal() {
+        anyhow::bail!("the TUI must be run in an interactive terminal");
     }
 
     let mut terminal = TerminalSession::enter()?;
