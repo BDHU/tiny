@@ -20,7 +20,7 @@ impl SessionId {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let stamp = chrono_like_stamp();
+        let stamp = format!("{now}");
         let suffix = format!("{:04x}", (now as u64) & 0xffff);
         Self(format!("{stamp}-{suffix}"))
     }
@@ -50,7 +50,10 @@ pub struct SessionMeta {
 
 impl Session {
     pub fn new(model: impl Into<String>) -> Self {
-        let now = chrono_like_stamp();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos().to_string())
+            .unwrap_or_default();
         Self {
             id: SessionId::generate(),
             created_at: now.clone(),
@@ -62,7 +65,10 @@ impl Session {
     }
 
     pub fn touch(&mut self) {
-        self.updated_at = chrono_like_stamp();
+        self.updated_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos().to_string())
+            .unwrap_or_default();
     }
 
     pub fn ensure_title(&mut self) {
@@ -98,7 +104,11 @@ pub fn list() -> Result<Vec<SessionMeta>> {
             Err(_) => continue,
         }
     }
-    metas.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    metas.sort_by(|a, b| {
+        let an = a.updated_at.parse::<u128>().unwrap_or(0);
+        let bn = b.updated_at.parse::<u128>().unwrap_or(0);
+        bn.cmp(&an)
+    });
     Ok(metas)
 }
 
@@ -147,14 +157,6 @@ fn title_from(text: &str) -> String {
     }
 }
 
-fn chrono_like_stamp() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    format!("{nanos}")
-}
 
 #[cfg(test)]
 mod tests {
