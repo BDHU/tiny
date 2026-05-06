@@ -5,10 +5,8 @@ use crate::web::client;
 pub async fn fetch(url: &str) -> Result<String> {
     let endpoint = format!("https://r.jina.ai/{url}");
     let mut req = client().get(&endpoint).header("Accept", "text/plain");
-    if let Ok(key) = std::env::var("JINA_API_KEY") {
-        if !key.is_empty() {
-            req = req.bearer_auth(key);
-        }
+    if let Some(key) = std::env::var("JINA_API_KEY").ok().filter(|k| !k.is_empty()) {
+        req = req.bearer_auth(key);
     }
 
     req.send()

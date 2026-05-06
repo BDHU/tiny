@@ -1,9 +1,16 @@
+use std::sync::LazyLock;
+
 use anyhow::{Context, Result};
 use scraper::{ElementRef, Html, Selector};
 
 use crate::web::client;
 
 const ENDPOINT: &str = "https://lite.duckduckgo.com/lite/";
+
+static LINK_SELECTOR: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("a.result-link").expect("valid result link selector"));
+static SNIPPET_SELECTOR: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("td.result-snippet").expect("valid snippet selector"));
 
 #[derive(Debug)]
 pub struct SearchResult {
@@ -29,16 +36,13 @@ pub async fn search(query: &str, limit: usize) -> Result<Vec<SearchResult>> {
 
 fn parse(html: &str, limit: usize) -> Vec<SearchResult> {
     let document = Html::parse_document(html);
-    let link = Selector::parse("a.result-link").expect("valid result link selector");
-    let snippet = Selector::parse("td.result-snippet").expect("valid snippet selector");
-
     document
-        .select(&link)
+        .select(&LINK_SELECTOR)
         .take(limit)
         .map(|a| SearchResult {
             title: element_text(a),
             url: normalize_url(a.value().attr("href").unwrap_or_default()),
-            snippet: snippet_after(a, &link, &snippet),
+            snippet: snippet_after(a),
         })
         .collect()
 }
@@ -59,11 +63,7 @@ fn element_text(element: scraper::ElementRef<'_>) -> String {
         .join(" ")
 }
 
-fn snippet_after(
-    link: ElementRef<'_>,
-    link_selector: &Selector,
-    snippet_selector: &Selector,
-) -> String {
+fn snippet_after(link: ElementRef<'_>) -> String {
     let Some(row) = link
         .parent()
         .and_then(ElementRef::wrap)
@@ -76,10 +76,10 @@ fn snippet_after(
         let Some(element) = ElementRef::wrap(node) else {
             continue;
         };
-        if element.select(link_selector).next().is_some() {
+        if element.select(&LINK_SELECTOR).next().is_some() {
             break;
         }
-        if let Some(snippet) = element.select(snippet_selector).next() {
+        if let Some(snippet) = element.select(&SNIPPET_SELECTOR).next() {
             return element_text(snippet);
         }
     }
