@@ -108,13 +108,12 @@ pub fn load(id: &SessionId) -> Result<Session> {
 
 pub fn save(session: &Session) -> Result<()> {
     let dir = sessions_dir();
-    ensure_dir(&dir)?;
+    fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
     let final_path = path_for(&session.id);
     let tmp_path = final_path.with_extension("json.tmp");
 
     let data = serde_json::to_vec_pretty(session).context("serialize session")?;
     fs::write(&tmp_path, &data).with_context(|| format!("write {}", tmp_path.display()))?;
-    set_file_mode(&tmp_path, 0o600);
     fs::rename(&tmp_path, &final_path)
         .with_context(|| format!("rename {} -> {}", tmp_path.display(), final_path.display()))?;
     Ok(())
@@ -136,28 +135,6 @@ fn path_for(id: &SessionId) -> PathBuf {
     sessions_dir().join(format!("{}.json", id.as_str()))
 }
 
-fn ensure_dir(dir: &std::path::Path) -> Result<()> {
-    if dir.exists() {
-        return Ok(());
-    }
-    fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
-    set_file_mode(dir, 0o700);
-    Ok(())
-}
-
-#[cfg(unix)]
-fn set_file_mode(path: &std::path::Path, mode: u32) {
-    use std::os::unix::fs::PermissionsExt;
-    if let Ok(meta) = fs::metadata(path) {
-        let mut perm = meta.permissions();
-        perm.set_mode(mode);
-        let _ = fs::set_permissions(path, perm);
-    }
-}
-
-#[cfg(not(unix))]
-fn set_file_mode(_path: &std::path::Path, _mode: u32) {}
-
 fn title_from(text: &str) -> String {
     const LIMIT: usize = 60;
     let trimmed = text.trim().replace('\n', " ");
@@ -171,36 +148,12 @@ fn title_from(text: &str) -> String {
 }
 
 fn chrono_like_stamp() -> String {
-    // ISO-ish timestamp without bringing in chrono. UTC.
     use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
+    let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
+        .map(|d| d.as_nanos())
         .unwrap_or(0);
-
-    let (year, month, day, hour, minute, second) = unix_to_ymd_hms(secs);
-    format!("{year:04}-{month:02}-{day:02}T{hour:02}-{minute:02}-{second:02}")
-}
-
-fn unix_to_ymd_hms(secs: u64) -> (i32, u32, u32, u32, u32, u32) {
-    let days = (secs / 86_400) as i64;
-    let seconds_of_day = (secs % 86_400) as u32;
-    let hour = seconds_of_day / 3600;
-    let minute = (seconds_of_day % 3600) / 60;
-    let second = seconds_of_day % 60;
-
-    // Civil-from-days algorithm by Howard Hinnant (public domain).
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097) as u64;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = if m <= 2 { y + 1 } else { y };
-    (year as i32, m as u32, d as u32, hour, minute, second)
+    format!("{nanos}")
 }
 
 #[cfg(test)]
@@ -215,8 +168,8 @@ mod tests {
         // round-trip catches that and any future shape regression.
         let session = Session {
             id: SessionId("test-id".into()),
-            created_at: "2026-05-05T00-00-00".into(),
-            updated_at: "2026-05-05T00-00-00".into(),
+            created_at: "1234567890".into(),
+            updated_at: "1234567890".into(),
             model: "gpt-test".into(),
             title: "hello".into(),
             history: vec![
