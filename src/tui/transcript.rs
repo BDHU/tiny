@@ -4,6 +4,7 @@ use ratatui::{
     text::{Line, Span},
 };
 use serde_json::Value;
+use std::collections::HashSet;
 use tiny::Message;
 
 pub(crate) enum Entry {
@@ -14,9 +15,14 @@ pub(crate) enum Entry {
     Error(String),
 }
 
+const COLLAPSED_TOOL_RESULT_LINES: usize = 3;
+
 #[derive(Default)]
 pub(crate) struct Transcript {
     entries: Vec<Entry>,
+    // Indices of entries (currently only ToolResult) the user has expanded.
+    // Stable across push() — reset on clear().
+    expanded: HashSet<usize>,
     lines: Vec<Line<'static>>,
     width: u16,
 }
@@ -54,11 +60,25 @@ impl Transcript {
 
     pub(crate) fn clear(&mut self) {
         self.entries.clear();
+        self.expanded.clear();
         self.relayout();
     }
 
     pub(crate) fn line_at(&self, index: usize) -> Option<Line<'static>> {
         self.lines.get(index).cloned()
+    }
+
+    pub(crate) fn last_tool_result_index(&self) -> Option<usize> {
+        self.entries
+            .iter()
+            .rposition(|entry| matches!(entry, Entry::ToolResult { .. }))
+    }
+
+    pub(crate) fn toggle_expanded(&mut self, index: usize) {
+        if !self.expanded.insert(index) {
+            self.expanded.remove(&index);
+        }
+        self.relayout();
     }
 
     fn relayout(&mut self) {
@@ -67,8 +87,8 @@ impl Transcript {
             return;
         }
 
-        for entry in &self.entries {
-            for line in render_entry(entry) {
+        for (index, entry) in self.entries.iter().enumerate() {
+            for line in render_entry(index, entry, &self.expanded) {
                 wrap_line(line, self.width, &mut self.lines);
             }
         }
@@ -118,7 +138,7 @@ pub(crate) fn result_preview(content: &str) -> String {
     }
 }
 
-fn render_entry(entry: &Entry) -> Vec<Line<'static>> {
+fn render_entry(index: usize, entry: &Entry, expanded: &HashSet<usize>) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     match entry {
         Entry::User(text) => {
@@ -156,17 +176,7 @@ fn render_entry(entry: &Entry) -> Vec<Line<'static>> {
             ]));
         }
         Entry::ToolResult { content, is_error } => {
-            let style = if *is_error {
-                Style::default().fg(theme::ERROR)
-            } else {
-                Style::default().fg(theme::DIM)
-            };
-            let body = result_preview(content);
-            lines.push(Line::from(vec![
-                Span::raw(theme::GUTTER),
-                Span::styled("  -> ", Style::default().fg(theme::DIM)),
-                Span::styled(body, style),
-            ]));
+            render_tool_result(content, *is_error, expanded.contains(&index), &mut lines);
         }
         Entry::Error(text) => {
             lines.push(Line::default());
@@ -183,6 +193,51 @@ fn render_entry(entry: &Entry) -> Vec<Line<'static>> {
         }
     }
     lines
+}
+
+fn render_tool_result(content: &str, is_error: bool, expanded: bool, out: &mut Vec<Line<'static>>) {
+    let body_style = if is_error {
+        Style::default().fg(theme::ERROR)
+    } else {
+        Style::default().fg(theme::DIM)
+    };
+    let dim = Style::default().fg(theme::DIM);
+
+    let body_lines: Vec<&str> = content.lines().map(|line| line.trim_end()).collect();
+    let total = body_lines.len();
+    let shown = if expanded {
+        total
+    } else {
+        total.min(COLLAPSED_TOOL_RESULT_LINES)
+    };
+
+    for (i, line) in body_lines.iter().take(shown).enumerate() {
+        let arrow = if i == 0 { "  -> " } else { "     " };
+        out.push(Line::from(vec![
+            Span::raw(theme::GUTTER),
+            Span::styled(arrow, dim),
+            Span::styled((*line).to_string(), body_style),
+        ]));
+    }
+
+    let hint = if expanded && total > COLLAPSED_TOOL_RESULT_LINES {
+        Some("     tab to collapse".to_string())
+    } else if !expanded && total > shown {
+        Some(format!(
+            "     +{} more line{} · tab to expand",
+            total - shown,
+            if total - shown == 1 { "" } else { "s" }
+        ))
+    } else {
+        None
+    };
+
+    if let Some(hint) = hint {
+        out.push(Line::from(vec![
+            Span::raw(theme::GUTTER),
+            Span::styled(hint, dim),
+        ]));
+    }
 }
 
 fn wrap_line(line: Line<'static>, width: u16, out: &mut Vec<Line<'static>>) {
