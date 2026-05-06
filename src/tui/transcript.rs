@@ -156,9 +156,7 @@ fn render_entry(index: usize, entry: &Entry, expanded: &HashSet<usize>) -> Vec<L
         }
         Entry::Assistant(text) => {
             lines.push(Line::default());
-            for line in text.lines() {
-                lines.push(Line::from(format!("{}{line}", theme::GUTTER)));
-            }
+            render_assistant(text, &mut lines);
         }
         Entry::ToolCall { name, args } => {
             let args_preview = preview(&args.to_string(), 60);
@@ -237,6 +235,124 @@ fn render_tool_result(content: &str, is_error: bool, expanded: bool, out: &mut V
             Span::raw(theme::GUTTER),
             Span::styled(hint, dim),
         ]));
+    }
+}
+
+fn render_assistant(text: &str, out: &mut Vec<Line<'static>>) {
+    let dim = Style::default().fg(theme::DIM);
+    let assistant_marker_style = Style::default()
+        .fg(theme::ASSISTANT)
+        .add_modifier(Modifier::BOLD);
+    let bold = Style::default().add_modifier(Modifier::BOLD);
+    let mut in_code = false;
+    let mut first_line_emitted = false;
+
+    for raw in text.lines() {
+        let trimmed = raw.trim_start();
+        let is_fence = trimmed.starts_with("```");
+
+        let prefix_span = |first: bool| {
+            if first {
+                Span::styled("· ", assistant_marker_style)
+            } else {
+                Span::raw("  ")
+            }
+        };
+
+        if is_fence {
+            let first = !first_line_emitted;
+            first_line_emitted = true;
+            out.push(Line::from(vec![
+                Span::raw(theme::GUTTER),
+                prefix_span(first),
+                Span::styled(raw.to_string(), dim),
+            ]));
+            in_code = !in_code;
+            continue;
+        }
+
+        if in_code {
+            let first = !first_line_emitted;
+            first_line_emitted = true;
+            out.push(Line::from(vec![
+                Span::raw(theme::GUTTER),
+                prefix_span(first),
+                Span::styled(raw.to_string(), dim),
+            ]));
+            continue;
+        }
+
+        let first = !first_line_emitted;
+        first_line_emitted = true;
+        let mut spans = vec![Span::raw(theme::GUTTER), prefix_span(first)];
+
+        if let Some(rest) = heading_body(raw) {
+            spans.push(Span::styled(rest.to_string(), bold));
+        } else if let Some(rest) = bullet_body(raw) {
+            spans.push(Span::raw("• "));
+            extend_with_inline_code(&mut spans, rest);
+        } else {
+            extend_with_inline_code(&mut spans, raw);
+        }
+
+        out.push(Line::from(spans));
+    }
+}
+
+fn heading_body(line: &str) -> Option<&str> {
+    let mut hashes = 0;
+    let bytes = line.as_bytes();
+    while hashes < bytes.len() && bytes[hashes] == b'#' {
+        hashes += 1;
+    }
+    if hashes == 0 || hashes > 3 {
+        return None;
+    }
+    if bytes.get(hashes) == Some(&b' ') {
+        Some(&line[hashes + 1..])
+    } else {
+        None
+    }
+}
+
+fn bullet_body(line: &str) -> Option<&str> {
+    let bytes = line.as_bytes();
+    if bytes.len() >= 2 && (bytes[0] == b'-' || bytes[0] == b'*') && bytes[1] == b' ' {
+        Some(&line[2..])
+    } else {
+        None
+    }
+}
+
+fn extend_with_inline_code(spans: &mut Vec<Span<'static>>, text: &str) {
+    let code_style = Style::default().fg(theme::TOOL);
+    let mut in_code = false;
+    let mut buf = String::new();
+
+    for c in text.chars() {
+        if c == '`' {
+            if !buf.is_empty() {
+                if in_code {
+                    spans.push(Span::styled(std::mem::take(&mut buf), code_style));
+                } else {
+                    spans.push(Span::raw(std::mem::take(&mut buf)));
+                }
+            }
+            in_code = !in_code;
+            continue;
+        }
+        buf.push(c);
+    }
+
+    if !buf.is_empty() {
+        if in_code {
+            // Unbalanced trailing backtick: emit as literal.
+            let mut literal = String::from("`");
+            literal.push_str(&buf);
+            spans.push(Span::raw(literal));
+        } else {
+            spans.push(Span::raw(buf));
+        }
     }
 }
 
