@@ -132,16 +132,14 @@ fn render_entry(entry: &Entry) -> Vec<Line<'static>> {
     match entry {
         Entry::User(text) => {
             lines.push(Line::default());
-            lines.push(Line::from(vec![
-                Span::raw(theme::GUTTER),
-                Span::styled(
-                    "> ",
-                    Style::default()
-                        .fg(theme::USER)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(text.clone(), Style::default().fg(theme::USER)),
-            ]));
+            lines.push(gutter_line(
+                "> ",
+                Style::default()
+                    .fg(theme::USER)
+                    .add_modifier(Modifier::BOLD),
+                text.clone(),
+                Style::default().fg(theme::USER),
+            ));
         }
         Entry::Assistant(text) => {
             lines.push(Line::default());
@@ -167,16 +165,14 @@ fn render_entry(entry: &Entry) -> Vec<Line<'static>> {
         }
         Entry::Error(text) => {
             lines.push(Line::default());
-            lines.push(Line::from(vec![
-                Span::raw(theme::GUTTER),
-                Span::styled(
-                    "x ",
-                    Style::default()
-                        .fg(theme::ERROR)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(text.clone(), Style::default().fg(theme::ERROR)),
-            ]));
+            lines.push(gutter_line(
+                "x ",
+                Style::default()
+                    .fg(theme::ERROR)
+                    .add_modifier(Modifier::BOLD),
+                text.clone(),
+                Style::default().fg(theme::ERROR),
+            ));
         }
     }
     lines
@@ -195,11 +191,7 @@ fn render_tool_result(content: &str, is_error: bool, out: &mut Vec<Line<'static>
 
     for (i, line) in body_lines.iter().take(shown).enumerate() {
         let arrow = if i == 0 { "  -> " } else { "     " };
-        out.push(Line::from(vec![
-            Span::raw(theme::GUTTER),
-            Span::styled(arrow, dim),
-            Span::styled((*line).to_string(), body_style),
-        ]));
+        out.push(gutter_line(arrow, dim, (*line).to_string(), body_style));
     }
 
     if body_lines.len() > shown {
@@ -231,18 +223,14 @@ fn render_assistant(text: &str, out: &mut Vec<Line<'static>>) {
         let trimmed = raw.trim_start();
         let is_fence = trimmed.starts_with("```");
 
-        if is_fence {
+        let raw_code_line = is_fence || in_code;
+        if raw_code_line {
             let first = !first_line_emitted;
             first_line_emitted = true;
             push_raw_assistant_line(out, raw, first, dim, assistant_marker_style);
-            in_code = !in_code;
-            continue;
-        }
-
-        if in_code {
-            let first = !first_line_emitted;
-            first_line_emitted = true;
-            push_raw_assistant_line(out, raw, first, dim, assistant_marker_style);
+            if is_fence {
+                in_code = !in_code;
+            }
             continue;
         }
 
@@ -278,6 +266,19 @@ fn push_raw_assistant_line(
         assistant_prefix(first, marker_style),
         Span::styled(text.to_string(), style),
     ]));
+}
+
+fn gutter_line(
+    marker: &'static str,
+    marker_style: Style,
+    text: String,
+    text_style: Style,
+) -> Line<'static> {
+    Line::from(vec![
+        Span::raw(theme::GUTTER),
+        Span::styled(marker, marker_style),
+        Span::styled(text, text_style),
+    ])
 }
 
 fn assistant_prefix(first: bool, marker_style: Style) -> Span<'static> {
@@ -403,11 +404,9 @@ fn push_span(line: &mut Line<'static>, content: String, style: Style) {
 }
 
 fn char_width(c: char) -> usize {
-    if c == '\t' {
-        4
-    } else if c.is_control() {
-        0
-    } else {
-        1
+    match c {
+        '\t' => 4,
+        c if c.is_control() => 0,
+        _ => 1,
     }
 }

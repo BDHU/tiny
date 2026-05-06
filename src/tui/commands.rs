@@ -116,12 +116,7 @@ pub(crate) fn help_text() -> String {
     let width = COMMANDS.iter().map(|c| c.name.len()).max().unwrap_or(0);
     let mut body = String::from("Commands:\n");
     for cmd in COMMANDS {
-        body.push_str(&format!(
-            "  /{:<width$}  {}\n",
-            cmd.name,
-            cmd.help,
-            width = width
-        ));
+        body.push_str(&format!("  /{:<width$}  {}\n", cmd.name, cmd.help));
     }
     body
 }

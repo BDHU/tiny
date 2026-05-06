@@ -148,10 +148,8 @@ impl State {
         self.session.id = Some(meta.id.0);
         self.session.model = meta.model;
         self.transcript.clear();
-        for message in history {
-            for entry in entries_from_message(message) {
-                self.transcript.push(entry);
-            }
+        for entry in history.into_iter().flat_map(entries_from_message) {
+            self.transcript.push(entry);
         }
         self.scroll.follow_tail();
     }
@@ -301,12 +299,8 @@ fn handle_palette_key(state: &mut State, key: KeyEvent) -> Option<Option<Effect>
     }
 
     match key.code {
-        KeyCode::Up => {
-            move_palette(state, matches.len(), -1);
-            Some(None)
-        }
-        KeyCode::Down => {
-            move_palette(state, matches.len(), 1);
+        KeyCode::Up | KeyCode::Down => {
+            move_palette(state, matches.len(), key_delta(key.code));
             Some(None)
         }
         KeyCode::Tab => {
@@ -340,15 +334,9 @@ fn handle_picker_key(state: &mut State, key: KeyEvent) -> Option<Effect> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
         KeyCode::Char('c') if ctrl => Some(Effect::Quit),
-        KeyCode::Up => {
+        KeyCode::Up | KeyCode::Down => {
             if let Some(picker) = state.picker.as_mut() {
-                picker.move_by(-1);
-            }
-            None
-        }
-        KeyCode::Down => {
-            if let Some(picker) = state.picker.as_mut() {
-                picker.move_by(1);
+                picker.move_by(key_delta(key.code));
             }
             None
         }
@@ -362,6 +350,13 @@ fn handle_picker_key(state: &mut State, key: KeyEvent) -> Option<Effect> {
             None
         }
         _ => None,
+    }
+}
+
+fn key_delta(code: KeyCode) -> i32 {
+    match code {
+        KeyCode::Up => -1,
+        _ => 1,
     }
 }
 

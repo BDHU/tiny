@@ -27,7 +27,6 @@ impl ScrollState {
     }
 
     pub(crate) fn follow_tail(&mut self) {
-        self.follow_tail = true;
         self.scroll_to_bottom();
     }
 
