@@ -8,7 +8,7 @@ use ratatui::{
 pub(super) fn render_input(f: &mut ratatui::Frame, state: &State, area: Rect) {
     if let Some(pending) = &state.pending {
         let prompt = format!(
-            " Allow {}({})?  [y]es  [n]o ",
+            " Run {}({})?  [y]es  [n]o ",
             pending.call.name,
             preview(&pending.call.input.to_string(), 60)
         );

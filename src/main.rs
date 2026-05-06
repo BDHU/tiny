@@ -16,7 +16,6 @@ mod web_search;
 struct Config {
     api_key: Option<String>,
     model: Option<String>,
-    system: Option<String>,
 }
 
 fn load_config() -> Result<Config> {
@@ -43,7 +42,7 @@ async fn main() -> Result<()> {
         .context("set api_key in tiny.json or OPENAI_API_KEY in your environment")?;
     let model = cfg.model.unwrap_or_else(|| "gpt-4o-mini".to_string());
     let tools = tools::default_tools();
-    let system = cfg.system.unwrap_or_else(|| default_system_prompt(&tools));
+    let system = default_system_prompt(&tools);
 
     let config = Arc::new(
         AgentConfig::new(OpenAiProvider::new(api_key, model.clone()), system).with_tools(tools),
@@ -58,16 +57,20 @@ fn default_system_prompt(tools: &[Box<dyn ErasedTool>]) -> String {
         .map(|t| format!("- {}: {}\n", t.name(), t.description()))
         .collect();
     let cwd = std::env::current_dir()
-        .map(|p| format!("\nCurrent working directory: {}", p.display()))
-        .unwrap_or_default();
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "<unknown>".to_string());
     let date = chrono::Local::now().format("%Y-%m-%d");
     format!(
-        "You are a coding assistant running inside tiny, a small agent harness. \
-You help by reading and editing files, running shell commands, and searching the web.\n\n\
+        "You are a coding assistant running inside tiny, a small terminal agent harness.\n\n\
+Current date: {date}\n\
+Current working directory: {cwd}\n\n\
 Available tools:\n{tool_list}\n\
 Guidelines:\n\
-- Be concise in your responses\n\
-- Show file paths clearly when working with files\n\
-{cwd}\nCurrent date: {date}\n"
+- Be concise and direct.\n\
+- Read relevant files before changing code.\n\
+- Prefer structured tools for file work: read, edit, write, list, glob, and grep.\n\
+- Use bash when shell commands, tests, builds, formatting, or git inspection are needed.\n\
+- Show file paths clearly when discussing changes.\n\
+- After code changes, run the smallest useful verification command and report the result.\n"
     )
 }

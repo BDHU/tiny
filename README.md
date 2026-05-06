@@ -15,8 +15,7 @@ Create `tiny.json` in your project directory or `~/.tiny/config.json`:
 ```json
 {
   "api_key": "sk-...",
-  "model": "gpt-4o-mini",
-  "system": "You are a helpful assistant."
+  "model": "gpt-4o-mini"
 }
 ```
 
