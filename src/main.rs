@@ -5,8 +5,11 @@ use std::sync::Arc;
 use tiny::{AgentConfig, OpenAiProvider};
 
 mod backend;
+mod html;
 mod tools;
 mod tui;
+mod web_fetch;
+mod web_search;
 
 #[derive(Deserialize, Default)]
 struct Config {
