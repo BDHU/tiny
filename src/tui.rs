@@ -1,3 +1,4 @@
+mod commands;
 mod events;
 mod input;
 mod line;
