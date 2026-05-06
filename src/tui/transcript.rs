@@ -101,10 +101,27 @@ pub(crate) fn entries_from_message(message: Message) -> Vec<Entry> {
 }
 
 pub(crate) fn preview(text: &str, limit: usize) -> String {
+    truncate_after(text, limit, "...")
+}
+
+pub(crate) fn ellipsize(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    if max == 0 {
+        return String::new();
+    }
+    if max == 1 {
+        return "…".into();
+    }
+    truncate_after(text, max - 1, "…")
+}
+
+fn truncate_after(text: &str, limit: usize, suffix: &str) -> String {
     let mut chars = text.chars();
     let short: String = chars.by_ref().take(limit).collect();
     if chars.next().is_some() {
-        format!("{short}...")
+        format!("{short}{suffix}")
     } else {
         short
     }
@@ -190,7 +207,11 @@ fn render_tool_result(content: &str, is_error: bool, out: &mut Vec<Line<'static>
         out.push(Line::from(vec![
             Span::raw(theme::GUTTER),
             Span::styled(
-                format!("     +{} more line{}", more, if more == 1 { "" } else { "s" }),
+                format!(
+                    "     +{} more line{}",
+                    more,
+                    if more == 1 { "" } else { "s" }
+                ),
                 dim,
             ),
         ]));
@@ -210,22 +231,10 @@ fn render_assistant(text: &str, out: &mut Vec<Line<'static>>) {
         let trimmed = raw.trim_start();
         let is_fence = trimmed.starts_with("```");
 
-        let prefix_span = |first: bool| {
-            if first {
-                Span::styled("· ", assistant_marker_style)
-            } else {
-                Span::raw("  ")
-            }
-        };
-
         if is_fence {
             let first = !first_line_emitted;
             first_line_emitted = true;
-            out.push(Line::from(vec![
-                Span::raw(theme::GUTTER),
-                prefix_span(first),
-                Span::styled(raw.to_string(), dim),
-            ]));
+            push_raw_assistant_line(out, raw, first, dim, assistant_marker_style);
             in_code = !in_code;
             continue;
         }
@@ -233,17 +242,16 @@ fn render_assistant(text: &str, out: &mut Vec<Line<'static>>) {
         if in_code {
             let first = !first_line_emitted;
             first_line_emitted = true;
-            out.push(Line::from(vec![
-                Span::raw(theme::GUTTER),
-                prefix_span(first),
-                Span::styled(raw.to_string(), dim),
-            ]));
+            push_raw_assistant_line(out, raw, first, dim, assistant_marker_style);
             continue;
         }
 
         let first = !first_line_emitted;
         first_line_emitted = true;
-        let mut spans = vec![Span::raw(theme::GUTTER), prefix_span(first)];
+        let mut spans = vec![
+            Span::raw(theme::GUTTER),
+            assistant_prefix(first, assistant_marker_style),
+        ];
 
         if let Some(rest) = heading_body(raw) {
             spans.push(Span::styled(rest.to_string(), bold));
@@ -255,6 +263,28 @@ fn render_assistant(text: &str, out: &mut Vec<Line<'static>>) {
         }
 
         out.push(Line::from(spans));
+    }
+}
+
+fn push_raw_assistant_line(
+    out: &mut Vec<Line<'static>>,
+    text: &str,
+    first: bool,
+    style: Style,
+    marker_style: Style,
+) {
+    out.push(Line::from(vec![
+        Span::raw(theme::GUTTER),
+        assistant_prefix(first, marker_style),
+        Span::styled(text.to_string(), style),
+    ]));
+}
+
+fn assistant_prefix(first: bool, marker_style: Style) -> Span<'static> {
+    if first {
+        Span::styled("· ", marker_style)
+    } else {
+        Span::raw("  ")
     }
 }
 

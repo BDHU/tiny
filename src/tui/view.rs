@@ -1,4 +1,9 @@
-use crate::tui::{commands, state::State, theme, transcript::preview};
+use crate::tui::{
+    commands,
+    state::State,
+    theme,
+    transcript::{ellipsize, preview},
+};
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
@@ -249,7 +254,7 @@ fn picker_line(
     } else {
         meta.title.clone()
     };
-    let title = truncate(&title, title_max);
+    let title = ellipsize(&title, title_max);
     let row_style = if selected {
         Style::default()
             .fg(theme::USER)
@@ -261,22 +266,6 @@ fn picker_line(
         Span::styled(format!(" {marker_text}{active_text} "), row_style),
         Span::styled(title, row_style),
     ])
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    let count = s.chars().count();
-    if count <= max {
-        return s.to_string();
-    }
-    if max == 0 {
-        return String::new();
-    }
-    if max == 1 {
-        return "…".into();
-    }
-    let mut out: String = s.chars().take(max - 1).collect();
-    out.push('…');
-    out
 }
 
 fn render_palette(f: &mut ratatui::Frame, state: &State, input_area: Rect) {
@@ -350,7 +339,7 @@ fn palette_line(
         Span::styled(format!("/{name}"), name_style),
         Span::raw(name_pad),
         Span::raw("  "),
-        Span::styled(truncate(help, help_max), Style::default().fg(theme::DIM)),
+        Span::styled(ellipsize(help, help_max), Style::default().fg(theme::DIM)),
     ])
 }
 

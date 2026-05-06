@@ -24,7 +24,6 @@ pub(crate) struct SessionInfo {
     pub(crate) directory: String,
     pub(crate) directory_label: String,
     pub(crate) id: Option<String>,
-    pub(crate) title: String,
 }
 
 pub(crate) struct State {
@@ -147,7 +146,6 @@ impl State {
 
     fn replace_session(&mut self, meta: SessionMeta, history: Vec<Message>) {
         self.session.id = Some(meta.id.0);
-        self.session.title = meta.title;
         self.session.model = meta.model;
         self.transcript.clear();
         for message in history {
@@ -192,7 +190,6 @@ impl SessionInfo {
             directory,
             directory_label,
             id: None,
-            title: String::new(),
         }
     }
 }
@@ -238,24 +235,13 @@ fn handle_key(state: &mut State, key: KeyEvent) -> Option<Effect> {
     }
 
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    if let Some(effect) = handle_palette_key(state, key) {
+        return effect;
+    }
+
     match key.code {
         KeyCode::Char('c') if ctrl => Some(Effect::Quit),
         KeyCode::Char('l') if ctrl => Some(Effect::Redraw),
-        KeyCode::Up if commands::palette_active(state.input.as_str()) => {
-            move_palette(state, -1);
-            None
-        }
-        KeyCode::Down if commands::palette_active(state.input.as_str()) => {
-            move_palette(state, 1);
-            None
-        }
-        KeyCode::Tab if commands::palette_active(state.input.as_str()) => {
-            complete_from_palette(state);
-            None
-        }
-        KeyCode::Enter if commands::palette_active(state.input.as_str()) => {
-            run_palette_selection(state)
-        }
         KeyCode::Enter if !state.input.is_blank() => state.submit_input(),
         KeyCode::Char(c) => {
             state.input.insert_char(c);
@@ -300,36 +286,54 @@ fn handle_key(state: &mut State, key: KeyEvent) -> Option<Effect> {
     }
 }
 
-fn move_palette(state: &mut State, delta: i32) {
-    let count = commands::palette_matches(state.input.as_str()).len();
-    if count == 0 {
-        return;
+fn handle_palette_key(state: &mut State, key: KeyEvent) -> Option<Option<Effect>> {
+    if !commands::palette_active(state.input.as_str()) {
+        return None;
     }
+
+    let matches = commands::palette_matches(state.input.as_str());
+    if matches.is_empty() {
+        return match key.code {
+            KeyCode::Up | KeyCode::Down | KeyCode::Tab => Some(None),
+            KeyCode::Enter => Some(state.submit_input()),
+            _ => None,
+        };
+    }
+
+    match key.code {
+        KeyCode::Up => {
+            move_palette(state, matches.len(), -1);
+            Some(None)
+        }
+        KeyCode::Down => {
+            move_palette(state, matches.len(), 1);
+            Some(None)
+        }
+        KeyCode::Tab => {
+            let selected = matches[state.palette_index.min(matches.len() - 1)];
+            complete_from_palette(state, selected.name);
+            Some(None)
+        }
+        KeyCode::Enter => {
+            let selected_name = matches[state.palette_index.min(matches.len() - 1)].name;
+            state.input.clear();
+            state.palette_index = 0;
+            Some(state.dispatch_command(selected_name))
+        }
+        _ => None,
+    }
+}
+
+fn move_palette(state: &mut State, count: usize, delta: i32) {
     let len = count as i32;
     let next = (state.palette_index as i32 + delta).rem_euclid(len);
     state.palette_index = next as usize;
 }
 
-fn complete_from_palette(state: &mut State) {
-    let matches = commands::palette_matches(state.input.as_str());
-    if matches.is_empty() {
-        return;
-    }
-    let selected = matches[state.palette_index.min(matches.len() - 1)];
+fn complete_from_palette(state: &mut State, name: &str) {
     state.input.clear();
-    state.input.insert_str(&format!("/{} ", selected.name));
+    state.input.insert_str(&format!("/{name} "));
     state.palette_index = 0;
-}
-
-fn run_palette_selection(state: &mut State) -> Option<Effect> {
-    let matches = commands::palette_matches(state.input.as_str());
-    if matches.is_empty() {
-        return state.submit_input();
-    }
-    let selected_name = matches[state.palette_index.min(matches.len() - 1)].name;
-    state.input.clear();
-    state.palette_index = 0;
-    state.dispatch_command(selected_name)
 }
 
 fn handle_picker_key(state: &mut State, key: KeyEvent) -> Option<Effect> {
@@ -396,5 +400,4 @@ mod tests {
         assert!(effect.is_none());
         assert_eq!(state.input.as_str(), "");
     }
-
 }
