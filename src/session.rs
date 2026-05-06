@@ -157,7 +157,6 @@ fn title_from(text: &str) -> String {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

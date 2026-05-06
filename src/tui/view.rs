@@ -65,10 +65,7 @@ fn intro_lines(state: &State) -> Vec<Line<'static>> {
             Span::raw(state.session.directory.clone()),
         ]),
         Line::default(),
-        Line::from(Span::styled(
-            "Type a message and press ⏎ to begin.",
-            dim,
-        )),
+        Line::from(Span::styled("Type a message and press ⏎ to begin.", dim)),
     ]
 }
 
