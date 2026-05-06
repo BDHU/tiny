@@ -1,3 +1,5 @@
+use std::fmt::Write;
+
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use schemars::JsonSchema;
@@ -6,6 +8,8 @@ use tiny::{boxed_tool, ErasedTool, Tool};
 use tokio::fs;
 use tokio::process::Command;
 
+use crate::{web_fetch, web_search};
+
 pub fn default_tools() -> Vec<Box<dyn ErasedTool>> {
     vec![
         boxed_tool(ReadTool),
@@ -13,6 +17,8 @@ pub fn default_tools() -> Vec<Box<dyn ErasedTool>> {
         boxed_tool(EditTool),
         boxed_tool(ListTool),
         boxed_tool(BashTool),
+        boxed_tool(WebSearchTool),
+        boxed_tool(WebFetchTool),
     ]
 }
 
@@ -175,4 +181,74 @@ impl Tool for BashTool {
             "exit: {status}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
         ))
     }
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct WebSearchArgs {
+    /// Query string.
+    query: String,
+    /// Maximum number of results to return. Defaults to 5.
+    limit: Option<usize>,
+}
+
+pub struct WebSearchTool;
+
+#[async_trait]
+impl Tool for WebSearchTool {
+    type Args = WebSearchArgs;
+
+    fn name(&self) -> &str {
+        "web_search"
+    }
+    fn description(&self) -> &str {
+        "Search the public web via DuckDuckGo and return ranked title/url/snippet results."
+    }
+    async fn call(&self, args: WebSearchArgs) -> Result<String> {
+        let limit = args.limit.unwrap_or(5).clamp(1, 20);
+        let results = web_search::search(&args.query, limit).await?;
+        if results.is_empty() {
+            return Ok("(no results)".to_string());
+        }
+        let mut out = String::new();
+        for (i, r) in results.iter().enumerate() {
+            let _ = writeln!(out, "{}. {}\n   {}\n   {}", i + 1, r.title, r.url, r.snippet);
+        }
+        Ok(out.trim_end().to_string())
+    }
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct WebFetchArgs {
+    /// URL to fetch (must include scheme, e.g. https://...).
+    url: String,
+    /// Maximum number of characters to return. Defaults to 8000.
+    max_chars: Option<usize>,
+}
+
+pub struct WebFetchTool;
+
+#[async_trait]
+impl Tool for WebFetchTool {
+    type Args = WebFetchArgs;
+
+    fn name(&self) -> &str {
+        "web_fetch"
+    }
+    fn description(&self) -> &str {
+        "Fetch a URL and return its readable text. HTML pages are stripped of markup; other content is returned as-is."
+    }
+    async fn call(&self, args: WebFetchArgs) -> Result<String> {
+        let max_chars = args.max_chars.unwrap_or(8000).clamp(100, 100_000);
+        let body = web_fetch::fetch(&args.url).await?;
+        Ok(truncate_chars(body, max_chars))
+    }
+}
+
+fn truncate_chars(mut s: String, max_chars: usize) -> String {
+    let mut indices = s.char_indices();
+    if let Some((cut, _)) = indices.nth(max_chars) {
+        s.truncate(cut);
+        s.push_str("\n…[truncated]");
+    }
+    s
 }
