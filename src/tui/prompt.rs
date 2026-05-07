@@ -57,46 +57,41 @@ impl Prompt {
     pub(crate) fn render<W: Write>(&mut self, out: &mut W, view: &View<'_>) -> io::Result<()> {
         let (term_cols, term_rows) = view.terminal_size;
 
-        // Render every row into a buffer so we can count rows up front and
-        // pre-scroll the terminal once. `\r\n` separates rows; `start_row`
-        // emits the separator and bumps the row counter.
-        let mut buf: Vec<u8> = Vec::new();
-        let mut rows: u16 = 0;
-        let input_row;
-        let input_col;
+        // Render into a buffer first so we know how many rows to allocate.
+        let mut frame = Frame::default();
 
         if let Some(picker) = view.picker {
-            write_picker(&mut buf, &mut rows, picker, view.active_session_id, term_rows)?;
+            write_picker(&mut frame, picker, view.active_session_id, term_rows)?;
         }
 
         if view.busy() && view.pending_call.is_none() {
-            start_row(&mut buf, &mut rows)?;
-            write_spinner(&mut buf, view)?;
+            frame.row()?;
+            write_spinner(&mut frame, view)?;
         }
 
-        if let Some(call) = view.pending_call {
-            start_row(&mut buf, &mut rows)?;
-            write_permission(&mut buf, call)?;
-            input_row = rows - 1;
-            input_col = 0;
+        let input_col = if let Some(call) = view.pending_call {
+            frame.row()?;
+            write_permission(&mut frame, call)?;
+            0
         } else {
-            start_row(&mut buf, &mut rows)?;
-            input_col = write_input(&mut buf, view, term_cols)?;
-            input_row = rows - 1;
-        }
+            frame.row()?;
+            write_input(&mut frame, view, term_cols)?
+        };
+        let input_row = frame.current_row();
 
         if view.picker.is_none() {
-            write_palette(&mut buf, &mut rows, view)?;
+            write_palette(&mut frame, view)?;
         }
 
-        start_row(&mut buf, &mut rows)?;
-        write_status(&mut buf, view, term_cols)?;
+        frame.row()?;
+        write_status(&mut frame, view, term_cols)?;
 
         // Wipe whatever the previous render left on screen so a shrinking
         // prompt does not leave stale rows behind.
         self.clear(out)?;
 
         // Allocate rows below current cursor: terminal scrolls if needed.
+        let rows = frame.rows();
         if rows > 1 {
             for _ in 0..(rows - 1) {
                 queue!(out, Print("\r\n"))?;
@@ -105,7 +100,7 @@ impl Prompt {
         }
         queue!(out, MoveToColumn(0))?;
 
-        out.write_all(&buf)?;
+        out.write_all(frame.as_bytes())?;
 
         // Cursor was left on the last row, move up to the input row.
         let from_bottom = rows - 1 - input_row;
@@ -120,28 +115,49 @@ impl Prompt {
     }
 }
 
-fn start_row<W: Write>(out: &mut W, rows: &mut u16) -> io::Result<()> {
-    if *rows > 0 {
-        out.write_all(b"\r\n")?;
+#[derive(Default)]
+struct Frame {
+    buf: Vec<u8>,
+    rows: u16,
+}
+
+impl Frame {
+    fn row(&mut self) -> io::Result<()> {
+        if self.rows > 0 {
+            self.buf.write_all(b"\r\n")?;
+        }
+        self.rows += 1;
+        Ok(())
     }
-    *rows += 1;
-    Ok(())
+
+    fn current_row(&self) -> u16 {
+        self.rows.saturating_sub(1)
+    }
+
+    fn rows(&self) -> u16 {
+        self.rows
+    }
+
+    fn as_bytes(&self) -> &[u8] {
+        &self.buf
+    }
+}
+
+impl Write for Frame {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.buf.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.buf.flush()
+    }
 }
 
 fn write_input<W: Write>(out: &mut W, view: &View<'_>, term_cols: u16) -> io::Result<u16> {
     let prefix = "> ";
     let prefix_cols = prefix.chars().count() as u16;
     let inner_width = term_cols.saturating_sub(prefix_cols).max(1);
-    let cursor_col_full = view.input.cursor_column();
-    let scroll_x = cursor_col_full.saturating_sub(inner_width.saturating_sub(1));
-
-    let visible: String = view
-        .input
-        .as_str()
-        .chars()
-        .skip(scroll_x as usize)
-        .take(inner_width as usize)
-        .collect();
+    let window = view.input.visible_window(inner_width);
     let prefix_color = if view.busy() { theme::DIM } else { theme::USER };
 
     queue!(
@@ -151,10 +167,10 @@ fn write_input<W: Write>(out: &mut W, view: &View<'_>, term_cols: u16) -> io::Re
         Print(prefix),
         SetAttribute(Attribute::NormalIntensity),
         ResetColor,
-        Print(&visible),
+        Print(&window.text),
     )?;
 
-    Ok(prefix_cols + (cursor_col_full - scroll_x))
+    Ok(prefix_cols + window.cursor_column)
 }
 
 fn write_permission<W: Write>(out: &mut W, call: &ToolCall) -> io::Result<()> {
@@ -212,7 +228,7 @@ fn write_status<W: Write>(out: &mut W, view: &View<'_>, term_cols: u16) -> io::R
     queue!(out, SetForegroundColor(theme::DIM), Print(text), ResetColor)
 }
 
-fn write_palette<W: Write>(out: &mut W, rows: &mut u16, view: &View<'_>) -> io::Result<()> {
+fn write_palette(frame: &mut Frame, view: &View<'_>) -> io::Result<()> {
     let matches = commands::palette_matches(view.input.as_str());
     if matches.is_empty() {
         return Ok(());
@@ -220,8 +236,8 @@ fn write_palette<W: Write>(out: &mut W, rows: &mut u16, view: &View<'_>) -> io::
     let selected = view.palette_index.min(matches.len() - 1);
     let name_width = matches.iter().map(|c| c.name.len()).max().unwrap_or(0);
     for (i, cmd) in matches.iter().enumerate() {
-        start_row(out, rows)?;
-        write_palette_row(out, cmd, name_width, i == selected)?;
+        frame.row()?;
+        write_palette_row(frame, cmd, name_width, i == selected)?;
     }
     Ok(())
 }
@@ -263,39 +279,32 @@ fn write_palette_row<W: Write>(
     }
 }
 
-fn write_picker<W: Write>(
-    out: &mut W,
-    rows: &mut u16,
+fn write_picker(
+    frame: &mut Frame,
     picker: &SessionPicker,
     active_id: Option<&str>,
     term_rows: u16,
 ) -> io::Result<()> {
-    if picker.sessions.is_empty() {
+    if picker.is_empty() {
         return Ok(());
     }
     // Cap picker height so input/status still fit on screen.
-    let max_rows = term_rows.saturating_sub(5).min(20).max(1) as usize;
-    let total = picker.sessions.len();
-    let window = max_rows.min(total);
-    let selected = picker.selected.min(total - 1);
-    let start = if selected >= window {
-        selected + 1 - window
-    } else {
-        0
-    };
-    let end = (start + window).min(total);
+    let max_rows = term_rows.saturating_sub(5).clamp(1, 20) as usize;
+    let selected = picker.selected_index();
 
-    start_row(out, rows)?;
+    frame.row()?;
     queue!(
-        out,
+        frame,
         SetForegroundColor(theme::DIM),
         Print(" Sessions "),
         ResetColor,
     )?;
 
-    for i in start..end {
-        let meta = &picker.sessions[i];
-        let is_selected = i == selected;
+    for i in picker.visible_range(max_rows) {
+        let Some(meta) = picker.session(i) else {
+            continue;
+        };
+        let is_selected = Some(i) == selected;
         let is_active = Some(meta.id.as_str()) == active_id;
         let marker = if is_selected { ">" } else { " " };
         let active_marker = if is_active { "*" } else { " " };
@@ -306,10 +315,10 @@ fn write_picker<W: Write>(
         };
         let prefix = format!(" {marker}{active_marker} ");
 
-        start_row(out, rows)?;
+        frame.row()?;
         if is_selected {
             queue!(
-                out,
+                frame,
                 SetForegroundColor(theme::USER),
                 SetAttribute(Attribute::Bold),
                 Print(prefix),
@@ -318,13 +327,13 @@ fn write_picker<W: Write>(
                 ResetColor,
             )?;
         } else {
-            queue!(out, Print(prefix), Print(title))?;
+            queue!(frame, Print(prefix), Print(title))?;
         }
     }
 
-    start_row(out, rows)?;
+    frame.row()?;
     queue!(
-        out,
+        frame,
         SetForegroundColor(theme::DIM),
         Print(" ↑/↓ navigate  ⏎ resume  esc cancel "),
         ResetColor,

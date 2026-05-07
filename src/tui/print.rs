@@ -64,7 +64,13 @@ pub(crate) fn print_user<W: Write>(out: &mut W, text: &str) -> io::Result<()> {
         } else {
             queue!(out, Print("  "))?;
         }
-        queue!(out, SetForegroundColor(theme::USER), Print(line), ResetColor, Print(NL))?;
+        queue!(
+            out,
+            SetForegroundColor(theme::USER),
+            Print(line),
+            ResetColor,
+            Print(NL)
+        )?;
     }
     Ok(())
 }
@@ -204,11 +210,7 @@ pub(crate) fn print_separator<W: Write>(out: &mut W) -> io::Result<()> {
     )
 }
 
-pub(crate) fn print_intro<W: Write>(
-    out: &mut W,
-    model: &str,
-    directory: &str,
-) -> io::Result<()> {
+pub(crate) fn print_intro<W: Write>(out: &mut W, model: &str, directory: &str) -> io::Result<()> {
     queue!(
         out,
         SetForegroundColor(theme::USER),
@@ -304,4 +306,3 @@ fn print_inline_code<W: Write>(out: &mut W, text: &str) -> io::Result<()> {
     }
     Ok(())
 }
-
