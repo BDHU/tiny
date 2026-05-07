@@ -3,31 +3,30 @@ use anyhow::Result;
 use crossterm::{
     event::{DisableBracketedPaste, EnableBracketedPaste},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{backend::CrosstermBackend, Terminal};
-use std::io::{stdin, stdout, IsTerminal};
+use std::io::{stdin, stdout, IsTerminal, Write};
 use std::sync::Arc;
 use tiny::AgentConfig;
 
-struct TerminalSession(Terminal<CrosstermBackend<std::io::Stdout>>);
+struct RawSession;
 
-impl TerminalSession {
+impl RawSession {
     fn enter() -> Result<Self> {
         enable_raw_mode()?;
-        execute!(stdout(), EnterAlternateScreen, EnableBracketedPaste)?;
-        Ok(Self(Terminal::new(CrosstermBackend::new(stdout()))?))
+        execute!(stdout(), EnableBracketedPaste)?;
+        Ok(Self)
     }
 }
 
-impl Drop for TerminalSession {
+impl Drop for RawSession {
     fn drop(&mut self) {
-        let _ = execute!(
-            self.0.backend_mut(),
-            DisableBracketedPaste,
-            LeaveAlternateScreen
-        );
+        let _ = execute!(stdout(), DisableBracketedPaste);
         let _ = disable_raw_mode();
+        // Leave the cursor on a fresh line so the shell prompt comes back cleanly.
+        let mut out = stdout();
+        let _ = out.write_all(b"\r\n");
+        let _ = out.flush();
     }
 }
 
@@ -36,6 +35,7 @@ pub async fn run(config: Arc<AgentConfig>, model: String) -> Result<()> {
         anyhow::bail!("the TUI must be run in an interactive terminal");
     }
 
-    let mut terminal = TerminalSession::enter()?;
-    runtime::run(&mut terminal.0, config, model).await
+    let _session = RawSession::enter()?;
+    let mut out = stdout();
+    runtime::run(&mut out, config, model).await
 }
