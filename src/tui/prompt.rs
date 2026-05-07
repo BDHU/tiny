@@ -65,6 +65,9 @@ impl Prompt {
             write_spinner(&mut frame, view)?;
         }
 
+        // Blank row above the input/permission area for breathing room.
+        frame.row()?;
+
         let (input_col, input_row) = if let Some(call) = view.pending_call {
             frame.row()?;
             write_permission(&mut frame, call, term_cols)?;
@@ -76,10 +79,11 @@ impl Prompt {
             (col, start_row + row_offset)
         };
 
-        // Mandatory rows so far + the status line below = budget floor.
-        // Anything left over is what the variable section (picker/palette)
-        // can use; if the terminal is too short, it gets nothing.
-        let used = frame.rows() as usize + 1;
+        // Mandatory rows so far + a blank spacer + the status line below =
+        // budget floor. Anything left over is what the variable section
+        // (picker/palette) can use; if the terminal is too short, it gets
+        // nothing.
+        let used = frame.rows() as usize + 2;
         let variable_budget = (term_rows as usize).saturating_sub(used);
 
         if let Some(picker) = view.picker {
@@ -88,6 +92,8 @@ impl Prompt {
             write_palette(&mut frame, view, variable_budget)?;
         }
 
+        // Blank row separating the input/picker area from the status line.
+        frame.row()?;
         frame.row()?;
         write_status(&mut frame, view, term_cols)?;
 
@@ -168,16 +174,8 @@ fn write_input(
 ) -> io::Result<(u16, u16)> {
     let prefix = "> ";
     let prefix_cols: u16 = 2;
-    let prefix_color = if view.busy() { theme::DIM } else { theme::USER };
 
-    queue!(
-        frame,
-        SetForegroundColor(prefix_color),
-        SetAttribute(Attribute::Bold),
-        Print(prefix),
-        SetAttribute(Attribute::NormalIntensity),
-        ResetColor,
-    )?;
+    queue!(frame, Print(prefix))?;
 
     let chars: Vec<char> = view.input.as_str().chars().collect();
     let cursor_idx = view.input.cursor_column() as usize;

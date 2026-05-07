@@ -6,6 +6,11 @@ use crate::tui::{
     state::{AppState, Modal},
 };
 use anyhow::Result;
+use crossterm::{
+    cursor::MoveTo,
+    queue,
+    terminal,
+};
 use std::io::Write;
 use tiny::Message;
 
@@ -44,7 +49,24 @@ pub(crate) fn handle_backend_event<W: Write>(
             state.set_session(meta, &history);
             if !is_initial {
                 prompt.clear(out)?;
-                print::print_separator(out)?;
+                if history.is_empty() {
+                    // /new — scroll the visible chat into scrollback so
+                    // the next render anchors the prompt at the top with
+                    // no gap. After prompt.clear() the cursor is at the
+                    // top of where the prompt was (call that row K).
+                    // Emitting term_rows-1 newlines walks the cursor
+                    // down to the bottom (T-1-K newlines) and then each
+                    // remaining newline scrolls one row into scrollback,
+                    // for K rows total — exactly the chat content,
+                    // regardless of K.
+                    let (_, term_rows) = terminal::size().unwrap_or((80, 24));
+                    for _ in 0..term_rows.saturating_sub(1) {
+                        out.write_all(b"\r\n")?;
+                    }
+                    queue!(out, MoveTo(0, 0))?;
+                } else {
+                    print::print_separator(out)?;
+                }
                 out.flush()?;
             }
             if !history.is_empty() {

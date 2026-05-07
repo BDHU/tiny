@@ -1,7 +1,8 @@
 use crate::tui::theme;
 use crossterm::{
     queue,
-    style::{Attribute, Print, ResetColor, SetAttribute, SetForegroundColor},
+    style::{Attribute, Print, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor},
+    terminal::{Clear, ClearType},
 };
 use serde_json::Value;
 use std::io::{self, Write};
@@ -52,24 +53,19 @@ pub(crate) fn print_entry<W: Write>(out: &mut W, entry: &Entry) -> io::Result<()
 pub(crate) fn print_user<W: Write>(out: &mut W, text: &str) -> io::Result<()> {
     queue!(out, Print(NL))?;
     for (i, line) in text.split('\n').enumerate() {
-        queue!(out, Print(theme::GUTTER))?;
-        if i == 0 {
-            queue!(
-                out,
-                SetForegroundColor(theme::USER),
-                SetAttribute(Attribute::Bold),
-                Print("> "),
-                SetAttribute(Attribute::NormalIntensity),
-            )?;
-        } else {
-            queue!(out, Print("  "))?;
-        }
+        let prefix = if i == 0 { "> " } else { "  " };
         queue!(
             out,
-            SetForegroundColor(theme::USER),
-            Print(line),
+            SetBackgroundColor(theme::USER_BG),
+            Print(theme::GUTTER),
+            SetForegroundColor(theme::DIM),
+            Print(prefix),
             ResetColor,
-            Print(NL)
+            SetBackgroundColor(theme::USER_BG),
+            Print(line),
+            Clear(ClearType::UntilNewLine),
+            ResetColor,
+            Print(NL),
         )?;
     }
     Ok(())
