@@ -40,7 +40,7 @@ pub(crate) fn handle_backend_event<W: Write>(
             state.turn = None;
         }
         BackendEvent::SessionChanged { meta, history } => {
-            let is_initial = !state.has_session();
+            let is_initial = state.session.is_none();
             state.set_session(meta, &history);
             if !is_initial {
                 prompt.clear(out)?;

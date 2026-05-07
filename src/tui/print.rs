@@ -234,14 +234,10 @@ pub(crate) fn print_intro<W: Write>(out: &mut W, model: &str, directory: &str) -
 }
 
 pub(crate) fn preview(text: &str, limit: usize) -> String {
-    truncate_after(text, limit, "...")
-}
-
-fn truncate_after(text: &str, limit: usize, suffix: &str) -> String {
     let mut chars = text.chars();
     let short: String = chars.by_ref().take(limit).collect();
     if chars.next().is_some() {
-        format!("{short}{suffix}")
+        format!("{short}...")
     } else {
         short
     }

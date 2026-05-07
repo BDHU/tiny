@@ -49,10 +49,6 @@ impl AppState {
         self.turn.is_some()
     }
 
-    pub(crate) fn has_session(&self) -> bool {
-        self.session.is_some()
-    }
-
     pub(crate) fn set_session(&mut self, meta: SessionMeta, history: &[Message]) {
         self.session = Some(SessionState {
             id: meta.id.0,

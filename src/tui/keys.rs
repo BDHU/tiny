@@ -202,8 +202,7 @@ fn submit_input<W: Write>(
     state.palette_index = 0;
 
     if let Some(rest) = input.strip_prefix('/') {
-        let rest = rest.to_string();
-        return dispatch_command(out, prompt, state, backend, &rest);
+        return dispatch_command(out, prompt, state, backend, rest);
     }
 
     emit_entry(out, prompt, &Entry::User(input.clone()))?;

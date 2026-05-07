@@ -12,13 +12,10 @@ pub(crate) fn render_screen<W: Write>(
     state: &AppState,
 ) -> Result<()> {
     let term_size = terminal::size().unwrap_or((80, 24));
-    let model = state
-        .session
-        .as_ref()
-        .map(|s| s.model.as_str())
-        .unwrap_or("unknown");
-    let message_count = state.session.as_ref().map(|s| s.message_count).unwrap_or(0);
-    let active_session_id = state.session.as_ref().map(|s| s.id.as_str());
+    let session = state.session.as_ref();
+    let model = session.map(|s| s.model.as_str()).unwrap_or("unknown");
+    let message_count = session.map(|s| s.message_count).unwrap_or(0);
+    let active_session_id = session.map(|s| s.id.as_str());
 
     let pending_call = match state.modal.as_ref() {
         Some(Modal::PermissionPrompt(_, call)) => Some(call),
