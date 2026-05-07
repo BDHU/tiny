@@ -65,20 +65,11 @@ const COMMANDS: &[Command] = &[
     },
 ];
 
-/// The portion of the input that's still naming a command, or `None` if the
-/// input isn't a `/` command being typed (no slash, or whitespace seen).
-fn typing_command(input: &str) -> Option<&str> {
-    input
+pub(crate) fn palette_matches(input: &str) -> Vec<&'static Command> {
+    let Some(prefix) = input
         .strip_prefix('/')
         .filter(|s| !s.contains(char::is_whitespace))
-}
-
-pub(crate) fn palette_active(input: &str) -> bool {
-    typing_command(input).is_some()
-}
-
-pub(crate) fn palette_matches(input: &str) -> Vec<&'static Command> {
-    let Some(prefix) = typing_command(input) else {
+    else {
         return Vec::new();
     };
     COMMANDS
@@ -124,16 +115,6 @@ pub(crate) fn help_text() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn palette_active_only_when_naming_a_command() {
-        assert!(palette_active("/"));
-        assert!(palette_active("/n"));
-        assert!(palette_active("/sessions"));
-        assert!(!palette_active(""));
-        assert!(!palette_active("hello"));
-        assert!(!palette_active("/sessions abc")); // past the name
-    }
 
     #[test]
     fn palette_matches_filters_by_prefix() {
