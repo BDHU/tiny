@@ -90,5 +90,4 @@ mod tests {
 
         assert_eq!(input.as_str(), "one two three");
     }
-
 }

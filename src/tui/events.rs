@@ -1,16 +1,13 @@
 use crate::backend::BackendEvent;
 use crate::tui::{
+    permission::PermissionPromptModal,
     picker::SessionPicker,
     print::{self, Entry},
     prompt::Prompt,
-    state::{AppState, Modal},
+    state::AppState,
 };
 use anyhow::Result;
-use crossterm::{
-    cursor::MoveTo,
-    queue,
-    terminal,
-};
+use crossterm::{cursor::MoveTo, queue, terminal};
 use std::io::Write;
 use tiny::Message;
 
@@ -33,7 +30,7 @@ pub(crate) fn handle_backend_event<W: Write>(
             }
         }
         BackendEvent::PermissionRequest { id, call } => {
-            state.modal = Some(Modal::PermissionPrompt(id, call));
+            state.modal = Some(Box::new(PermissionPromptModal::new(id, call)));
         }
         BackendEvent::TurnStarted => {
             state.turn_started_by_backend();
@@ -87,7 +84,8 @@ pub(crate) fn handle_backend_event<W: Write>(
                     &Entry::Assistant("No saved sessions yet. Send a message to start one.".into()),
                 )?;
             } else {
-                state.modal = Some(Modal::SessionPicker(SessionPicker::new(sessions)));
+                let active_id = state.session.as_ref().map(|s| s.id.clone());
+                state.modal = Some(Box::new(SessionPicker::new(sessions, active_id)));
             }
         }
         BackendEvent::SessionsListed(Err(error)) => {

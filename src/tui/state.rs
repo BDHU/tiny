@@ -1,12 +1,6 @@
-use crate::backend::PermissionId;
-use crate::tui::{input::InputBuffer, picker::SessionPicker};
+use crate::tui::{input::InputBuffer, modal::Modal};
 use std::time::Instant;
-use tiny::{Message, SessionMeta, ToolCall};
-
-pub(crate) enum Modal {
-    SessionPicker(SessionPicker),
-    PermissionPrompt(PermissionId, ToolCall),
-}
+use tiny::{Message, SessionMeta};
 
 pub(crate) struct TurnState {
     pub(crate) started_at: Instant,
@@ -23,7 +17,7 @@ pub(crate) struct AppState {
     pub(crate) input: InputBuffer,
     pub(crate) palette_index: usize,
     pub(crate) session: Option<SessionState>,
-    pub(crate) modal: Option<Modal>,
+    pub(crate) modal: Option<Box<dyn Modal>>,
     pub(crate) turn: Option<TurnState>,
     pub(crate) directory_label: String,
 }

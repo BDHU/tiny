@@ -2,6 +2,8 @@ mod commands;
 mod events;
 mod input;
 mod keys;
+mod modal;
+mod permission;
 mod picker;
 mod print;
 mod prompt;
