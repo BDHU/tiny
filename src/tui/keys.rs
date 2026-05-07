@@ -2,9 +2,10 @@ use crate::backend::{Backend, BackendCommand};
 use crate::tui::{
     commands::{self, CommandAction},
     events::emit_entry,
+    modal::ModalOutcome,
     print::Entry,
     prompt::Prompt,
-    state::{AppState, Modal},
+    state::AppState,
 };
 use anyhow::Result;
 use crossterm::{
@@ -14,7 +15,6 @@ use crossterm::{
     terminal::{Clear, ClearType},
 };
 use std::io::Write;
-use tiny::Decision;
 
 pub(crate) fn handle_input_event<W: Write>(
     out: &mut W,
@@ -46,61 +46,18 @@ fn handle_key<W: Write>(
 ) -> Result<bool> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
-    match state.modal.as_mut() {
-        Some(Modal::SessionPicker(picker)) => match key.code {
-            KeyCode::Char('c') if ctrl => Ok(true),
-            KeyCode::Up | KeyCode::Down => {
-                let delta = if matches!(key.code, KeyCode::Up) {
-                    -1
-                } else {
-                    1
-                };
-                picker.move_by(delta);
-                Ok(false)
-            }
-            KeyCode::Enter => {
-                if let Some(Modal::SessionPicker(picker)) = state.modal.take() {
-                    if let Some(id) = picker.into_selected_id() {
-                        let _ = backend.commands.send(BackendCommand::SwitchSession(id));
-                    }
-                }
-                Ok(false)
-            }
-            KeyCode::Esc => {
+    if let Some(modal) = state.modal.as_mut() {
+        match modal.handle_key(key, backend) {
+            ModalOutcome::Continue => Ok(false),
+            ModalOutcome::Close => {
                 state.modal = None;
                 Ok(false)
             }
-            _ => Ok(false),
-        },
-        Some(Modal::PermissionPrompt(_, _)) => handle_permission_key(state, backend, key, ctrl),
-        None => handle_main_key(out, prompt, state, backend, key, ctrl),
-    }
-}
-
-fn handle_permission_key(
-    state: &mut AppState,
-    backend: &Backend,
-    key: KeyEvent,
-    ctrl: bool,
-) -> Result<bool> {
-    let decision = match key.code {
-        KeyCode::Char('y') | KeyCode::Char('Y') => Some(Decision::Allow),
-        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-            Some(Decision::Deny("denied by user".into()))
+            ModalOutcome::Quit => Ok(true),
         }
-        KeyCode::Char('c') if ctrl => return Ok(true),
-        _ => None,
-    };
-
-    if let Some(decision) = decision {
-        if let Some(Modal::PermissionPrompt(perm_id, _)) = state.modal.take() {
-            let _ = backend.commands.send(BackendCommand::PermissionDecision {
-                id: perm_id,
-                decision,
-            });
-        }
+    } else {
+        handle_main_key(out, prompt, state, backend, key, ctrl)
     }
-    Ok(false)
 }
 
 fn handle_main_key<W: Write>(
@@ -166,13 +123,8 @@ fn handle_palette_key<W: Write>(
     match key.code {
         KeyCode::Up | KeyCode::Down => {
             let len = palette.len() as i32;
-            let delta = if matches!(key.code, KeyCode::Up) {
-                -1
-            } else {
-                1
-            };
-            let next = (state.palette_index as i32 + delta).rem_euclid(len);
-            state.palette_index = next as usize;
+            let next = state.palette_index as i32 + vertical_delta(key.code);
+            state.palette_index = next.rem_euclid(len) as usize;
             Ok(Some(false))
         }
         KeyCode::Tab => {
@@ -189,6 +141,14 @@ fn handle_palette_key<W: Write>(
             dispatch_command(out, prompt, state, backend, selected_name).map(Some)
         }
         _ => Ok(None),
+    }
+}
+
+fn vertical_delta(code: KeyCode) -> i32 {
+    if matches!(code, KeyCode::Up) {
+        -1
+    } else {
+        1
     }
 }
 
