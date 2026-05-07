@@ -60,10 +60,6 @@ impl Prompt {
         // Render into a buffer first so we know how many rows to allocate.
         let mut frame = Frame::default();
 
-        if let Some(picker) = view.picker {
-            write_picker(&mut frame, picker, view.active_session_id, term_rows)?;
-        }
-
         if view.busy() && view.pending_call.is_none() {
             frame.row()?;
             write_spinner(&mut frame, view)?;
@@ -71,7 +67,7 @@ impl Prompt {
 
         let input_col = if let Some(call) = view.pending_call {
             frame.row()?;
-            write_permission(&mut frame, call)?;
+            write_permission(&mut frame, call, term_cols)?;
             0
         } else {
             frame.row()?;
@@ -79,15 +75,25 @@ impl Prompt {
         };
         let input_row = frame.current_row();
 
-        if view.picker.is_none() {
-            write_palette(&mut frame, view)?;
+        // Mandatory rows so far + the status line below = budget floor.
+        // Anything left over is what the variable section (picker/palette)
+        // can use; if the terminal is too short, it gets nothing.
+        let used = frame.rows() as usize + 1;
+        let variable_budget = (term_rows as usize).saturating_sub(used);
+
+        if let Some(picker) = view.picker {
+            write_picker(&mut frame, picker, view.active_session_id, variable_budget)?;
+        } else {
+            write_palette(&mut frame, view, variable_budget)?;
         }
 
         frame.row()?;
         write_status(&mut frame, view, term_cols)?;
 
         // Wipe whatever the previous render left on screen so a shrinking
-        // prompt does not leave stale rows behind.
+        // prompt does not leave stale rows behind. Without the rule lines
+        // above the input, no row above the cursor wraps on width shrink,
+        // so the stored offset is still accurate.
         self.clear(out)?;
 
         // Allocate rows below current cursor: terminal scrolls if needed.
@@ -156,7 +162,12 @@ impl Write for Frame {
 fn write_input<W: Write>(out: &mut W, view: &View<'_>, term_cols: u16) -> io::Result<u16> {
     let prefix = "> ";
     let prefix_cols = prefix.chars().count() as u16;
-    let inner_width = term_cols.saturating_sub(prefix_cols).max(1);
+    // Reserve one extra column so the terminal's autowrap never kicks in
+    // and pushes the input onto a second row.
+    let inner_width = term_cols
+        .saturating_sub(prefix_cols)
+        .saturating_sub(1)
+        .max(1);
     let window = view.input.visible_window(inner_width);
     let prefix_color = if view.busy() { theme::DIM } else { theme::USER };
 
@@ -173,17 +184,19 @@ fn write_input<W: Write>(out: &mut W, view: &View<'_>, term_cols: u16) -> io::Re
     Ok(prefix_cols + window.cursor_column)
 }
 
-fn write_permission<W: Write>(out: &mut W, call: &ToolCall) -> io::Result<()> {
+fn write_permission<W: Write>(out: &mut W, call: &ToolCall, term_cols: u16) -> io::Result<()> {
     let text = format!(
         " Run {}({})?  [y]es  [n]o ",
         call.name,
         print::preview(&call.input.to_string(), 60)
     );
+    let max_cols = term_cols.saturating_sub(1) as usize;
+    let truncated: String = text.chars().take(max_cols).collect();
     queue!(
         out,
         SetForegroundColor(theme::TOOL),
         SetAttribute(Attribute::Bold),
-        Print(text),
+        Print(truncated),
         SetAttribute(Attribute::NormalIntensity),
         ResetColor,
     )
@@ -217,27 +230,44 @@ fn write_status<W: Write>(out: &mut W, view: &View<'_>, term_cols: u16) -> io::R
         view.model, view.message_count, queued, view.directory_label
     );
     let right = "⏎ send · /quit ";
-    let left_cols = left.chars().count() as u16;
-    let right_cols = right.chars().count() as u16;
-    let pad = term_cols
-        .saturating_sub(left_cols)
-        .saturating_sub(right_cols);
-    let mut text = left;
-    text.push_str(&" ".repeat(pad as usize));
-    text.push_str(right);
+    // Stay one column shy of the right edge so the terminal's autowrap
+    // never kicks in and pushes the line onto an extra row.
+    let max_cols = term_cols.saturating_sub(1) as usize;
+    let left_cols = left.chars().count();
+    let right_cols = right.chars().count();
+    let text = if left_cols + right_cols >= max_cols {
+        // Not enough room for both halves; drop the right side and
+        // truncate the left to fit.
+        left.chars().take(max_cols).collect::<String>()
+    } else {
+        let pad = max_cols - left_cols - right_cols;
+        let mut t = left;
+        t.push_str(&" ".repeat(pad));
+        t.push_str(right);
+        t
+    };
     queue!(out, SetForegroundColor(theme::DIM), Print(text), ResetColor)
 }
 
-fn write_palette(frame: &mut Frame, view: &View<'_>) -> io::Result<()> {
+fn write_palette(frame: &mut Frame, view: &View<'_>, max_rows: usize) -> io::Result<()> {
+    if max_rows == 0 {
+        return Ok(());
+    }
     let matches = commands::palette_matches(view.input.as_str());
     if matches.is_empty() {
         return Ok(());
     }
     let selected = view.palette_index.min(matches.len() - 1);
     let name_width = matches.iter().map(|c| c.name.len()).max().unwrap_or(0);
-    for (i, cmd) in matches.iter().enumerate() {
+    let visible = matches.len().min(max_rows);
+    // Slide the window so the selected entry stays in view.
+    let start = selected
+        .saturating_sub(visible - 1)
+        .min(matches.len() - visible);
+    for offset in 0..visible {
+        let i = start + offset;
         frame.row()?;
-        write_palette_row(frame, cmd, name_width, i == selected)?;
+        write_palette_row(frame, &matches[i], name_width, i == selected)?;
     }
     Ok(())
 }
@@ -283,13 +313,13 @@ fn write_picker(
     frame: &mut Frame,
     picker: &SessionPicker,
     active_id: Option<&str>,
-    term_rows: u16,
+    max_rows: usize,
 ) -> io::Result<()> {
-    if picker.is_empty() {
+    // Header + footer take 2 rows; need at least one row of items beyond that.
+    if picker.is_empty() || max_rows < 3 {
         return Ok(());
     }
-    // Cap picker height so input/status still fit on screen.
-    let max_rows = term_rows.saturating_sub(5).clamp(1, 20) as usize;
+    let items_budget = (max_rows - 2).min(20);
     let selected = picker.selected_index();
 
     frame.row()?;
@@ -300,7 +330,7 @@ fn write_picker(
         ResetColor,
     )?;
 
-    for i in picker.visible_range(max_rows) {
+    for i in picker.visible_range(items_budget) {
         let Some(meta) = picker.session(i) else {
             continue;
         };
