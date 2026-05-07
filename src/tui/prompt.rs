@@ -65,15 +65,16 @@ impl Prompt {
             write_spinner(&mut frame, view)?;
         }
 
-        let input_col = if let Some(call) = view.pending_call {
+        let (input_col, input_row) = if let Some(call) = view.pending_call {
             frame.row()?;
             write_permission(&mut frame, call, term_cols)?;
-            0
+            (0, frame.current_row())
         } else {
             frame.row()?;
-            write_input(&mut frame, view, term_cols)?
+            let start_row = frame.current_row();
+            let (col, row_offset) = write_input(&mut frame, view, term_cols)?;
+            (col, start_row + row_offset)
         };
-        let input_row = frame.current_row();
 
         // Mandatory rows so far + the status line below = budget floor.
         // Anything left over is what the variable section (picker/palette)
@@ -159,29 +160,65 @@ impl Write for Frame {
     }
 }
 
-fn write_input<W: Write>(out: &mut W, view: &View<'_>, term_cols: u16) -> io::Result<u16> {
+// Returns (cursor_col, cursor_row_offset_from_first_input_row).
+fn write_input(
+    frame: &mut Frame,
+    view: &View<'_>,
+    term_cols: u16,
+) -> io::Result<(u16, u16)> {
     let prefix = "> ";
-    let prefix_cols = prefix.chars().count() as u16;
-    // Reserve one extra column so the terminal's autowrap never kicks in
-    // and pushes the input onto a second row.
-    let inner_width = term_cols
-        .saturating_sub(prefix_cols)
-        .saturating_sub(1)
-        .max(1);
-    let window = view.input.visible_window(inner_width);
+    let prefix_cols: u16 = 2;
     let prefix_color = if view.busy() { theme::DIM } else { theme::USER };
 
     queue!(
-        out,
+        frame,
         SetForegroundColor(prefix_color),
         SetAttribute(Attribute::Bold),
         Print(prefix),
         SetAttribute(Attribute::NormalIntensity),
         ResetColor,
-        Print(&window.text),
     )?;
 
-    Ok(prefix_cols + window.cursor_column)
+    let chars: Vec<char> = view.input.as_str().chars().collect();
+    let cursor_idx = view.input.cursor_column() as usize;
+
+    // Per-row capacity. The first row has the prefix in front; later rows
+    // start at column 0. We reserve one column so the terminal's autowrap
+    // never kicks in unexpectedly.
+    let first_cap = term_cols
+        .saturating_sub(prefix_cols)
+        .saturating_sub(1)
+        .max(1) as usize;
+    let cont_cap = term_cols.saturating_sub(1).max(1) as usize;
+
+    let mut cursor_col: u16 = prefix_cols;
+    let mut cursor_row: u16 = 0;
+    let mut idx = 0usize;
+    let mut row: u16 = 0;
+    let mut cap = first_cap;
+    let mut col_base: u16 = prefix_cols;
+
+    loop {
+        let end = (idx + cap).min(chars.len());
+        let chunk: String = chars[idx..end].iter().collect();
+        queue!(frame, Print(chunk))?;
+
+        if cursor_idx >= idx && cursor_idx <= end {
+            cursor_row = row;
+            cursor_col = col_base + (cursor_idx - idx) as u16;
+        }
+
+        idx = end;
+        if idx >= chars.len() {
+            break;
+        }
+        frame.row()?;
+        row += 1;
+        cap = cont_cap;
+        col_base = 0;
+    }
+
+    Ok((cursor_col, cursor_row))
 }
 
 fn write_permission<W: Write>(out: &mut W, call: &ToolCall, term_cols: u16) -> io::Result<()> {

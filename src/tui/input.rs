@@ -4,11 +4,6 @@ pub(crate) struct InputBuffer {
     cursor: usize,
 }
 
-pub(crate) struct InputWindow {
-    pub(crate) text: String,
-    pub(crate) cursor_column: u16,
-}
-
 impl InputBuffer {
     pub(crate) fn as_str(&self) -> &str {
         &self.text
@@ -20,23 +15,6 @@ impl InputBuffer {
 
     pub(crate) fn cursor_column(&self) -> u16 {
         self.text[..self.cursor].chars().count() as u16
-    }
-
-    pub(crate) fn visible_window(&self, width: u16) -> InputWindow {
-        let width = width.max(1);
-        let cursor_column = self.cursor_column();
-        let scroll_x = cursor_column.saturating_sub(width.saturating_sub(1));
-        let text = self
-            .text
-            .chars()
-            .skip(scroll_x as usize)
-            .take(width as usize)
-            .collect();
-
-        InputWindow {
-            text,
-            cursor_column: cursor_column - scroll_x,
-        }
     }
 
     pub(crate) fn clear(&mut self) -> String {
@@ -113,14 +91,4 @@ mod tests {
         assert_eq!(input.as_str(), "one two three");
     }
 
-    #[test]
-    fn visible_window_tracks_cursor_when_input_overflows() {
-        let mut input = InputBuffer::default();
-
-        input.insert_str("abcdef");
-        let window = input.visible_window(4);
-
-        assert_eq!(window.text, "def");
-        assert_eq!(window.cursor_column, 3);
-    }
 }
