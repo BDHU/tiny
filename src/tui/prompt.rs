@@ -6,8 +6,8 @@
 use crate::tui::{
     commands::{self, Command},
     input::InputBuffer,
-    picker::SessionPicker,
-    print, theme,
+    modal::{Modal, ModalSlot},
+    theme,
 };
 use crossterm::{
     cursor::{MoveToColumn, MoveUp},
@@ -17,7 +17,6 @@ use crossterm::{
 };
 use std::io::{self, Write};
 use std::time::Instant;
-use tiny::ToolCall;
 
 #[derive(Default)]
 pub(crate) struct Prompt {
@@ -27,21 +26,13 @@ pub(crate) struct Prompt {
 pub(crate) struct View<'a> {
     pub(crate) input: &'a InputBuffer,
     pub(crate) palette_index: usize,
-    pub(crate) picker: Option<&'a SessionPicker>,
-    pub(crate) pending_call: Option<&'a ToolCall>,
+    pub(crate) modal: Option<&'a dyn Modal>,
     pub(crate) turn_started_at: Option<Instant>,
     pub(crate) queued: usize,
     pub(crate) model: &'a str,
     pub(crate) directory_label: &'a str,
     pub(crate) message_count: usize,
-    pub(crate) active_session_id: Option<&'a str>,
     pub(crate) terminal_size: (u16, u16),
-}
-
-impl View<'_> {
-    fn busy(&self) -> bool {
-        self.turn_started_at.is_some()
-    }
 }
 
 impl Prompt {
@@ -57,42 +48,37 @@ impl Prompt {
     pub(crate) fn render<W: Write>(&mut self, out: &mut W, view: &View<'_>) -> io::Result<()> {
         let (term_cols, term_rows) = view.terminal_size;
 
-        // Render into a buffer first so we know how many rows to allocate.
         let mut frame = Frame::default();
 
-        if view.busy() && view.pending_call.is_none() {
-            frame.row()?;
-            write_spinner(&mut frame, view)?;
-        }
-
-        // Blank row above the input/permission area for breathing room.
         frame.row()?;
 
-        let (input_col, input_row) = if let Some(call) = view.pending_call {
-            frame.row()?;
-            write_permission(&mut frame, call, term_cols)?;
-            (0, frame.current_row())
+        let input_modal = view
+            .modal
+            .filter(|m| matches!(m.slot(), ModalSlot::Input));
+        let panel_modal = view
+            .modal
+            .filter(|m| matches!(m.slot(), ModalSlot::Panel));
+
+        let (input_col, input_row) = if let Some(modal) = input_modal {
+            let row = frame.row()?;
+            modal.render(&mut frame, term_cols, 1)?;
+            (0, row)
         } else {
-            frame.row()?;
-            let start_row = frame.current_row();
+            let start_row = frame.row()?;
             let (col, row_offset) = write_input(&mut frame, view, term_cols)?;
             (col, start_row + row_offset)
         };
 
-        // Mandatory rows so far + a blank spacer + the status line below =
-        // budget floor. Anything left over is what the variable section
-        // (picker/palette) can use; if the terminal is too short, it gets
-        // nothing.
-        let used = frame.rows() as usize + 2;
-        let variable_budget = (term_rows as usize).saturating_sub(used);
+        // Reserve the final row for status. Suggestions and pickers take
+        // whatever remains between the input and that bottom status row.
+        let variable_budget = (term_rows as usize).saturating_sub(frame.rows() as usize + 2);
 
-        if let Some(picker) = view.picker {
-            write_picker(&mut frame, picker, view.active_session_id, variable_budget)?;
+        if let Some(modal) = panel_modal {
+            modal.render(&mut frame, term_cols, variable_budget)?;
         } else {
-            write_palette(&mut frame, view, variable_budget)?;
+            write_palette(&mut frame, view, variable_budget, term_cols)?;
         }
 
-        // Blank row separating the input/picker area from the status line.
         frame.row()?;
         frame.row()?;
         write_status(&mut frame, view, term_cols)?;
@@ -129,25 +115,21 @@ impl Prompt {
 }
 
 #[derive(Default)]
-struct Frame {
+pub(crate) struct Frame {
     buf: Vec<u8>,
     rows: u16,
 }
 
 impl Frame {
-    fn row(&mut self) -> io::Result<()> {
+    pub(crate) fn row(&mut self) -> io::Result<u16> {
         if self.rows > 0 {
             self.buf.write_all(b"\r\n")?;
         }
         self.rows += 1;
-        Ok(())
+        Ok(self.rows - 1)
     }
 
-    fn current_row(&self) -> u16 {
-        self.rows.saturating_sub(1)
-    }
-
-    fn rows(&self) -> u16 {
+    pub(crate) fn rows(&self) -> u16 {
         self.rows
     }
 
@@ -167,11 +149,7 @@ impl Write for Frame {
 }
 
 // Returns (cursor_col, cursor_row_offset_from_first_input_row).
-fn write_input(
-    frame: &mut Frame,
-    view: &View<'_>,
-    term_cols: u16,
-) -> io::Result<(u16, u16)> {
+fn write_input(frame: &mut Frame, view: &View<'_>, term_cols: u16) -> io::Result<(u16, u16)> {
     let prefix = "> ";
     let prefix_cols: u16 = 2;
 
@@ -219,72 +197,42 @@ fn write_input(
     Ok((cursor_col, cursor_row))
 }
 
-fn write_permission<W: Write>(out: &mut W, call: &ToolCall, term_cols: u16) -> io::Result<()> {
-    let text = format!(
-        " Run {}({})?  [y]es  [n]o ",
-        call.name,
-        print::preview(&call.input.to_string(), 60)
-    );
-    let max_cols = term_cols.saturating_sub(1) as usize;
-    let truncated: String = text.chars().take(max_cols).collect();
-    queue!(
-        out,
-        SetForegroundColor(theme::TOOL),
-        SetAttribute(Attribute::Bold),
-        Print(truncated),
-        SetAttribute(Attribute::NormalIntensity),
-        ResetColor,
-    )
-}
-
-fn write_spinner<W: Write>(out: &mut W, view: &View<'_>) -> io::Result<()> {
-    let started = view.turn_started_at;
-    let elapsed_secs = started.map(|t| t.elapsed().as_secs()).unwrap_or(0);
-    let elapsed_ticks = started.map(|t| t.elapsed().as_millis() / 80).unwrap_or(0) as usize;
-    let frame = theme::SPINNER[elapsed_ticks % theme::SPINNER.len()];
-    queue!(
-        out,
-        Print(theme::GUTTER),
-        SetForegroundColor(theme::TOOL),
-        Print(frame),
-        ResetColor,
-        SetForegroundColor(theme::DIM),
-        Print(format!(" Thinking... ({elapsed_secs}s)")),
-        ResetColor,
-    )
-}
-
 fn write_status<W: Write>(out: &mut W, view: &View<'_>, term_cols: u16) -> io::Result<()> {
-    let queued = if view.queued == 0 {
+    let started = view.turn_started_at;
+    let elapsed_ticks = started.map(|t| t.elapsed().as_millis() / 80).unwrap_or(0) as usize;
+    let busy = if let Some(started) = started {
+        let queued = if view.queued == 0 {
+            String::new()
+        } else {
+            format!(" · {} queued", view.queued)
+        };
+        format!(
+            " · {} {}s{}",
+            theme::SPINNER[elapsed_ticks % theme::SPINNER.len()],
+            started.elapsed().as_secs(),
+            queued
+        )
+    } else {
         String::new()
-    } else {
-        format!(" · {} queued", view.queued)
     };
-    let left = format!(
-        " {} · {} msgs{} · {}",
-        view.model, view.message_count, queued, view.directory_label
+    let text = format!(
+        " {} · {} msgs · {}{}",
+        view.model, view.message_count, view.directory_label, busy
     );
-    let right = "⏎ send · /quit ";
-    // Stay one column shy of the right edge so the terminal's autowrap
-    // never kicks in and pushes the line onto an extra row.
-    let max_cols = term_cols.saturating_sub(1) as usize;
-    let left_cols = left.chars().count();
-    let right_cols = right.chars().count();
-    let text = if left_cols + right_cols >= max_cols {
-        // Not enough room for both halves; drop the right side and
-        // truncate the left to fit.
-        left.chars().take(max_cols).collect::<String>()
-    } else {
-        let pad = max_cols - left_cols - right_cols;
-        let mut t = left;
-        t.push_str(&" ".repeat(pad));
-        t.push_str(right);
-        t
-    };
-    queue!(out, SetForegroundColor(theme::DIM), Print(text), ResetColor)
+    queue!(
+        out,
+        SetForegroundColor(theme::DIM),
+        Print(fit_line(&text, term_cols)),
+        ResetColor,
+    )
 }
 
-fn write_palette(frame: &mut Frame, view: &View<'_>, max_rows: usize) -> io::Result<()> {
+fn write_palette(
+    frame: &mut Frame,
+    view: &View<'_>,
+    max_rows: usize,
+    term_cols: u16,
+) -> io::Result<()> {
     if max_rows == 0 {
         return Ok(());
     }
@@ -295,14 +243,13 @@ fn write_palette(frame: &mut Frame, view: &View<'_>, max_rows: usize) -> io::Res
     let selected = view.palette_index.min(matches.len() - 1);
     let name_width = matches.iter().map(|c| c.name.len()).max().unwrap_or(0);
     let visible = matches.len().min(max_rows);
-    // Slide the window so the selected entry stays in view.
     let start = selected
         .saturating_sub(visible - 1)
         .min(matches.len() - visible);
     for offset in 0..visible {
         let i = start + offset;
         frame.row()?;
-        write_palette_row(frame, &matches[i], name_width, i == selected)?;
+        write_palette_row(frame, matches[i], name_width, i == selected, term_cols)?;
     }
     Ok(())
 }
@@ -312,96 +259,33 @@ fn write_palette_row<W: Write>(
     cmd: &Command,
     name_width: usize,
     selected: bool,
+    term_cols: u16,
 ) -> io::Result<()> {
     let pad = " ".repeat(name_width.saturating_sub(cmd.name.len()));
     let marker = if selected { " > " } else { "   " };
-    if selected {
-        queue!(
-            out,
-            SetForegroundColor(theme::USER),
-            SetAttribute(Attribute::Bold),
-            Print(marker),
-            Print(format!("/{}", cmd.name)),
-            SetAttribute(Attribute::NormalIntensity),
-            ResetColor,
-            Print(format!("{pad}  ")),
-            SetForegroundColor(theme::DIM),
-            Print(cmd.help),
-            ResetColor,
-        )
-    } else {
-        queue!(
-            out,
-            SetForegroundColor(theme::DIM),
-            Print(marker),
-            ResetColor,
-            Print(format!("/{}", cmd.name)),
-            Print(format!("{pad}  ")),
-            SetForegroundColor(theme::DIM),
-            Print(cmd.help),
-            ResetColor,
-        )
-    }
+    let text = format!("{marker}/{}{}  {}", cmd.name, pad, cmd.help);
+    write_choice_line(out, &text, selected, term_cols)
 }
 
-fn write_picker(
-    frame: &mut Frame,
-    picker: &SessionPicker,
-    active_id: Option<&str>,
-    max_rows: usize,
+pub(crate) fn write_choice_line<W: Write>(
+    out: &mut W,
+    text: &str,
+    selected: bool,
+    term_cols: u16,
 ) -> io::Result<()> {
-    // Header + footer take 2 rows; need at least one row of items beyond that.
-    if picker.is_empty() || max_rows < 3 {
-        return Ok(());
+    let color = if selected { theme::USER } else { theme::DIM };
+    queue!(out, SetForegroundColor(color))?;
+    if selected {
+        queue!(out, SetAttribute(Attribute::Bold))?;
     }
-    let items_budget = (max_rows - 2).min(20);
-    let selected = picker.selected_index();
-
-    frame.row()?;
-    queue!(
-        frame,
-        SetForegroundColor(theme::DIM),
-        Print(" Sessions "),
-        ResetColor,
-    )?;
-
-    for i in picker.visible_range(items_budget) {
-        let Some(meta) = picker.session(i) else {
-            continue;
-        };
-        let is_selected = Some(i) == selected;
-        let is_active = Some(meta.id.as_str()) == active_id;
-        let marker = if is_selected { ">" } else { " " };
-        let active_marker = if is_active { "*" } else { " " };
-        let title = if meta.title.is_empty() {
-            "(untitled)"
-        } else {
-            meta.title.as_str()
-        };
-        let prefix = format!(" {marker}{active_marker} ");
-
-        frame.row()?;
-        if is_selected {
-            queue!(
-                frame,
-                SetForegroundColor(theme::USER),
-                SetAttribute(Attribute::Bold),
-                Print(prefix),
-                Print(title),
-                SetAttribute(Attribute::NormalIntensity),
-                ResetColor,
-            )?;
-        } else {
-            queue!(frame, Print(prefix), Print(title))?;
-        }
+    queue!(out, Print(fit_line(text, term_cols)))?;
+    if selected {
+        queue!(out, SetAttribute(Attribute::NormalIntensity))?;
     }
+    queue!(out, ResetColor)
+}
 
-    frame.row()?;
-    queue!(
-        frame,
-        SetForegroundColor(theme::DIM),
-        Print(" ↑/↓ navigate  ⏎ resume  esc cancel "),
-        ResetColor,
-    )?;
-    Ok(())
+pub(crate) fn fit_line(text: &str, term_cols: u16) -> String {
+    let max_cols = term_cols.saturating_sub(1) as usize;
+    text.chars().take(max_cols).collect()
 }
