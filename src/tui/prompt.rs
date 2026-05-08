@@ -4,15 +4,13 @@
 // the terminal's own scrollback and we only manage these few rows.
 
 use crate::tui::{
-    input::InputBuffer,
-    state::AppState,
-    surface::{Line, RenderCtx, Style, Surface},
-    theme,
+    frame::Frame, prompt_input::write_input, state::AppState, status::write_status,
+    surface::RenderCtx,
 };
 use crossterm::{
     cursor::{MoveToColumn, MoveUp},
     queue,
-    style::{Attribute, Print, ResetColor, SetAttribute, SetForegroundColor},
+    style::Print,
     terminal::{Clear, ClearType},
 };
 use std::io::{self, Write};
@@ -102,11 +100,11 @@ pub(crate) fn build_frame(state: &AppState, terminal_size: (u16, u16)) -> io::Re
     let overlay = state.overlay.as_deref().filter(|m| m.is_visible(state));
     // Takeover panel modal wins; otherwise the overlay (palette) takes the
     // panel. Draft input is always rendered by the prompt itself.
-    let panel_modal = modal.or_else(|| overlay);
+    let panel_modal = modal.or(overlay);
 
     let start_row = frame.row()?;
-    let (input_col, row_offset) = write_input(&mut frame, &state.input, term_cols)?;
-    let input_row = start_row + row_offset;
+    let input_cursor = write_input(&mut frame, &state.input, term_cols)?;
+    let input_row = start_row + input_cursor.row_offset;
 
     // Reserve the final row for status. Suggestions and pickers take whatever
     // remains between the input and that bottom status row.
@@ -127,184 +125,9 @@ pub(crate) fn build_frame(state: &AppState, terminal_size: (u16, u16)) -> io::Re
 
     Ok(PromptFrame {
         frame,
-        input_col,
+        input_col: input_cursor.col,
         input_row,
     })
-}
-
-#[derive(Default)]
-pub(crate) struct Frame {
-    buf: Vec<u8>,
-    rows: u16,
-}
-
-impl Frame {
-    pub(crate) fn row(&mut self) -> io::Result<u16> {
-        if self.rows > 0 {
-            self.buf.write_all(b"\r\n")?;
-        }
-        self.rows += 1;
-        Ok(self.rows - 1)
-    }
-
-    pub(crate) fn rows(&self) -> u16 {
-        self.rows
-    }
-
-    pub(crate) fn render_surface(&mut self, surface: &Surface, term_cols: u16) -> io::Result<()> {
-        for line in &surface.lines {
-            self.row()?;
-            self.write_line(line, term_cols)?;
-        }
-        Ok(())
-    }
-
-    fn as_bytes(&self) -> &[u8] {
-        &self.buf
-    }
-
-    fn write_line(&mut self, line: &Line, term_cols: u16) -> io::Result<()> {
-        let mut remaining = term_cols.saturating_sub(1) as usize;
-        for span in &line.spans {
-            if remaining == 0 {
-                break;
-            }
-            let text: String = span.text.chars().take(remaining).collect();
-            let cols = text.chars().count();
-            if cols == 0 {
-                continue;
-            }
-            write_style(self, span.style)?;
-            queue!(self, Print(text))?;
-            reset_style(self, span.style)?;
-            remaining = remaining.saturating_sub(cols);
-        }
-        Ok(())
-    }
-}
-
-impl Write for Frame {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.buf.write(buf)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.buf.flush()
-    }
-}
-
-// Returns (cursor_col, cursor_row_offset_from_first_input_row).
-fn write_input(frame: &mut Frame, input: &InputBuffer, term_cols: u16) -> io::Result<(u16, u16)> {
-    let prefix = "> ";
-    let prefix_cols: u16 = 2;
-
-    queue!(frame, Print(prefix))?;
-
-    let chars: Vec<char> = input.as_str().chars().collect();
-    let cursor_idx = input.cursor_column() as usize;
-
-    // Per-row capacity. The first row has the prefix in front; later rows
-    // start at column 0. We reserve one column so the terminal's autowrap
-    // never kicks in unexpectedly.
-    let first_cap = term_cols
-        .saturating_sub(prefix_cols)
-        .saturating_sub(1)
-        .max(1) as usize;
-    let cont_cap = term_cols.saturating_sub(1).max(1) as usize;
-
-    let mut cursor_col: u16 = prefix_cols;
-    let mut cursor_row: u16 = 0;
-    let mut idx = 0usize;
-    let mut row: u16 = 0;
-    let mut cap = first_cap;
-    let mut col_base: u16 = prefix_cols;
-
-    loop {
-        let end = (idx + cap).min(chars.len());
-        let chunk: String = chars[idx..end].iter().collect();
-        queue!(frame, Print(chunk))?;
-
-        if cursor_idx >= idx && cursor_idx <= end {
-            cursor_row = row;
-            cursor_col = col_base + (cursor_idx - idx) as u16;
-        }
-
-        idx = end;
-        if idx >= chars.len() {
-            break;
-        }
-        frame.row()?;
-        row += 1;
-        cap = cont_cap;
-        col_base = 0;
-    }
-
-    Ok((cursor_col, cursor_row))
-}
-
-fn write_status<W: Write>(out: &mut W, state: &AppState, term_cols: u16) -> io::Result<()> {
-    let session = state.session.as_ref();
-    let model = session.map(|s| s.model.as_str()).unwrap_or("unknown");
-    let message_count = session.map(|s| s.message_count).unwrap_or(0);
-    // Hide the queued counter while a takeover modal is up; the user's mental
-    // model is "current turn paused on prompt", and the queue isn't growing.
-    let queued = if state.modal.is_none() {
-        state.turn.as_ref().map(|t| t.queued).unwrap_or(0)
-    } else {
-        0
-    };
-    let started = state.turn.as_ref().map(|t| t.started_at);
-    let elapsed_ticks = started.map(|t| t.elapsed().as_millis() / 80).unwrap_or(0) as usize;
-    let busy = if let Some(started) = started {
-        let queued_str = if queued == 0 {
-            String::new()
-        } else {
-            format!(" · {queued} queued")
-        };
-        format!(
-            " · {} {}s{}",
-            theme::SPINNER[elapsed_ticks % theme::SPINNER.len()],
-            started.elapsed().as_secs(),
-            queued_str
-        )
-    } else {
-        String::new()
-    };
-    let text = format!(
-        " {} · {} msgs · {}{}",
-        model, message_count, state.directory_label, busy
-    );
-    queue!(
-        out,
-        SetForegroundColor(theme::DIM),
-        Print(fit_line(&text, term_cols)),
-        ResetColor,
-    )
-}
-
-fn write_style<W: Write>(out: &mut W, style: Style) -> io::Result<()> {
-    if let Some(color) = style.fg {
-        queue!(out, SetForegroundColor(color))?;
-    }
-    if style.bold {
-        queue!(out, SetAttribute(Attribute::Bold))?;
-    }
-    Ok(())
-}
-
-fn reset_style<W: Write>(out: &mut W, style: Style) -> io::Result<()> {
-    if style.bold {
-        queue!(out, SetAttribute(Attribute::NormalIntensity))?;
-    }
-    if style.fg.is_some() {
-        queue!(out, ResetColor)?;
-    }
-    Ok(())
-}
-
-pub(crate) fn fit_line(text: &str, term_cols: u16) -> String {
-    let max_cols = term_cols.saturating_sub(1) as usize;
-    text.chars().take(max_cols).collect()
 }
 
 #[cfg(test)]
