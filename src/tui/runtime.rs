@@ -7,12 +7,11 @@ use crate::tui::{
 use anyhow::Result;
 use std::io::Write;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tiny::AgentConfig;
 use tokio::sync::mpsc;
 
-const TICK_INTERVAL: Duration = Duration::from_millis(80);
-const INPUT_ACTIVITY_GRACE: Duration = Duration::from_millis(250);
+const ANIMATION_INTERVAL: Duration = Duration::from_millis(80);
 
 pub(crate) async fn run<W: Write>(
     out: &mut W,
@@ -24,9 +23,8 @@ pub(crate) async fn run<W: Write>(
     let mut backend = backend::spawn(config, model.clone());
     let (reader_tx, mut reader_rx) = mpsc::unbounded_channel();
     let _reader = reader::spawn(reader_tx);
-    let mut ticker = tokio::time::interval(TICK_INTERVAL);
-    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut last_input_at: Option<Instant> = None;
+    let mut animation = tokio::time::interval(ANIMATION_INTERVAL);
+    animation.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     let cwd = std::env::current_dir().unwrap_or_default();
     print::print_intro(out, &model, &cwd.display().to_string())?;
@@ -34,22 +32,8 @@ pub(crate) async fn run<W: Write>(
     render_screen(out, &mut prompt, &state)?;
 
     loop {
-        tokio::select! {
-            _ = ticker.tick() => {
-                let input_recent = last_input_at
-                    .map(|at| at.elapsed() < INPUT_ACTIVITY_GRACE)
-                    .unwrap_or(false);
-                if state.is_busy() && !input_recent {
-                    render_screen(out, &mut prompt, &state)?;
-                }
-            }
-            Some(event) = backend.events.recv() => {
-                handle_backend_event(out, &mut prompt, &mut state, event)?;
-                while let Ok(event) = backend.events.try_recv() {
-                    handle_backend_event(out, &mut prompt, &mut state, event)?;
-                }
-                render_screen(out, &mut prompt, &state)?;
-            }
+        let needs_render = tokio::select! {
+            biased;
             event = reader_rx.recv() => {
                 let Some(event) = event else { break };
                 let mut should_quit = handle_input_event(out, &mut prompt, &mut state, &backend, event)?;
@@ -59,13 +43,25 @@ pub(crate) async fn run<W: Write>(
                     };
                     should_quit = handle_input_event(out, &mut prompt, &mut state, &backend, event)?;
                 }
-                last_input_at = Some(Instant::now());
                 if should_quit {
                     break;
                 }
-                render_screen(out, &mut prompt, &state)?;
+                true
+            }
+            Some(event) = backend.events.recv() => {
+                handle_backend_event(out, &mut prompt, &mut state, event)?;
+                while let Ok(event) = backend.events.try_recv() {
+                    handle_backend_event(out, &mut prompt, &mut state, event)?;
+                }
+                true
+            }
+            _ = animation.tick(), if state.is_busy() => {
+                true
             }
             else => break,
+        };
+        if needs_render {
+            render_screen(out, &mut prompt, &state)?;
         }
     }
 
