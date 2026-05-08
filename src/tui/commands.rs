@@ -1,5 +1,8 @@
-// Slash commands. Adding a command = one declarative entry.
+// Slash commands. Adding a command = one declarative entry plus one action
+// mapping below.
 
+use crate::backend::BackendCommand;
+use crate::tui::{modal::ModalOutcome, print::Entry};
 use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,6 +104,16 @@ pub(crate) fn dispatch(input: &str, busy: bool) -> Result<CommandAction, Command
     }
 
     Ok(cmd.action)
+}
+
+pub(crate) fn dispatch_outcome(input: &str, busy: bool) -> ModalOutcome {
+    match dispatch(input, busy) {
+        Ok(CommandAction::NewSession) => ModalOutcome::Emit(BackendCommand::NewSession),
+        Ok(CommandAction::OpenSessions) => ModalOutcome::Emit(BackendCommand::ListSessions),
+        Ok(CommandAction::ShowHelp) => ModalOutcome::Print(Entry::Assistant(help_text())),
+        Ok(CommandAction::Quit) => ModalOutcome::Quit,
+        Err(error) => ModalOutcome::Print(Entry::Error(error.to_string())),
+    }
 }
 
 pub(crate) fn help_text() -> String {

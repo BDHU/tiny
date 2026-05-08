@@ -1,8 +1,8 @@
 use crate::backend::{Backend, BackendCommand};
 use crate::tui::{
-    commands::{self, CommandAction},
+    commands,
     events::emit_entry,
-    modal::ModalOutcome,
+    modal::{KeyDispatch, ModalOutcome},
     print::Entry,
     prompt::Prompt,
     state::AppState,
@@ -28,6 +28,8 @@ pub(crate) fn handle_input_event<W: Write>(
             handle_key(out, prompt, state, backend, key)
         }
         CtEvent::Paste(text) => {
+            // Paste is for the input buffer; takeover modals own input, so
+            // suppress while one is open.
             if state.modal.is_none() {
                 state.input.insert_str(&text);
             }
@@ -44,19 +46,93 @@ fn handle_key<W: Write>(
     backend: &Backend,
     key: KeyEvent,
 ) -> Result<bool> {
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    // 1. Takeover modal claims everything.
+    if let Some(quit) = dispatch_takeover(out, prompt, state, backend, key)? {
+        return Ok(quit);
+    }
+    // 2. Overlay (palette) gets first dibs but can pass through.
+    if let Some(quit) = dispatch_overlay(out, prompt, state, backend, key)? {
+        return Ok(quit);
+    }
+    // 3. Default input handling.
+    handle_main_key(out, prompt, state, backend, key)
+}
 
-    if let Some(modal) = state.modal.as_mut() {
-        match modal.handle_key(key, backend) {
-            ModalOutcome::Continue => Ok(false),
-            ModalOutcome::Close => {
-                state.modal = None;
-                Ok(false)
-            }
-            ModalOutcome::Quit => Ok(true),
+fn dispatch_takeover<W: Write>(
+    out: &mut W,
+    prompt: &mut Prompt,
+    state: &mut AppState,
+    backend: &Backend,
+    key: KeyEvent,
+) -> Result<Option<bool>> {
+    let Some(mut modal) = state.modal.take() else {
+        return Ok(None);
+    };
+    let dispatch = modal.handle_key(key, state);
+    match dispatch {
+        KeyDispatch::PassThrough => {
+            // No takeover modal currently passes through, but if one did we
+            // reinstall it and let the rest of the ladder run.
+            state.modal = Some(modal);
+            Ok(None)
         }
-    } else {
-        handle_main_key(out, prompt, state, backend, key, ctrl)
+        KeyDispatch::Consumed(outcome) => {
+            let (quit, keep) = apply_outcome(out, prompt, state, backend, outcome)?;
+            if keep {
+                state.modal = Some(modal);
+            }
+            Ok(Some(quit))
+        }
+    }
+}
+
+fn dispatch_overlay<W: Write>(
+    out: &mut W,
+    prompt: &mut Prompt,
+    state: &mut AppState,
+    backend: &Backend,
+    key: KeyEvent,
+) -> Result<Option<bool>> {
+    let Some(mut overlay) = state.overlay.take() else {
+        return Ok(None);
+    };
+    let dispatch = overlay.handle_key(key, state);
+    // Overlays are permanent — always reinstall regardless of outcome.
+    state.overlay = Some(overlay);
+    match dispatch {
+        KeyDispatch::PassThrough => Ok(None),
+        KeyDispatch::Consumed(outcome) => {
+            let (quit, _keep) = apply_outcome(out, prompt, state, backend, outcome)?;
+            Ok(Some(quit))
+        }
+    }
+}
+
+/// Apply a modal outcome's side effects. Returns `(should_quit, keep_modal)`.
+/// `keep_modal` is meaningful for takeover modals; overlays ignore it.
+fn apply_outcome<W: Write>(
+    out: &mut W,
+    prompt: &mut Prompt,
+    _state: &mut AppState,
+    backend: &Backend,
+    outcome: ModalOutcome,
+) -> Result<(bool, bool)> {
+    match outcome {
+        ModalOutcome::Continue => Ok((false, true)),
+        ModalOutcome::Close => Ok((false, false)),
+        ModalOutcome::Quit => Ok((true, false)),
+        ModalOutcome::Emit(cmd) => {
+            let _ = backend.commands.send(cmd);
+            Ok((false, true))
+        }
+        ModalOutcome::EmitAndClose(cmd) => {
+            let _ = backend.commands.send(cmd);
+            Ok((false, false))
+        }
+        ModalOutcome::Print(entry) => {
+            emit_entry(out, prompt, &entry)?;
+            Ok((false, true))
+        }
     }
 }
 
@@ -66,12 +142,8 @@ fn handle_main_key<W: Write>(
     state: &mut AppState,
     backend: &Backend,
     key: KeyEvent,
-    ctrl: bool,
 ) -> Result<bool> {
-    if let Some(should_quit) = handle_palette_key(out, prompt, state, backend, key)? {
-        return Ok(should_quit);
-    }
-
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
         KeyCode::Char('c') if ctrl => Ok(true),
         KeyCode::Char('l') if ctrl => {
@@ -83,12 +155,10 @@ fn handle_main_key<W: Write>(
         KeyCode::Enter if !state.input.is_blank() => submit_input(out, prompt, state, backend),
         KeyCode::Char(c) => {
             state.input.insert_char(c);
-            state.palette_index = 0;
             Ok(false)
         }
         KeyCode::Backspace => {
             state.input.backspace();
-            state.palette_index = 0;
             Ok(false)
         }
         KeyCode::Left => {
@@ -101,54 +171,9 @@ fn handle_main_key<W: Write>(
         }
         KeyCode::Esc => {
             state.input.clear();
-            state.palette_index = 0;
             Ok(false)
         }
         _ => Ok(false),
-    }
-}
-
-fn handle_palette_key<W: Write>(
-    out: &mut W,
-    prompt: &mut Prompt,
-    state: &mut AppState,
-    backend: &Backend,
-    key: KeyEvent,
-) -> Result<Option<bool>> {
-    let palette = commands::palette_matches(state.input.as_str());
-    if palette.is_empty() {
-        return Ok(None);
-    }
-
-    match key.code {
-        KeyCode::Up | KeyCode::Down => {
-            let len = palette.len() as i32;
-            let next = state.palette_index as i32 + vertical_delta(key.code);
-            state.palette_index = next.rem_euclid(len) as usize;
-            Ok(Some(false))
-        }
-        KeyCode::Tab => {
-            let selected = palette[state.palette_index.min(palette.len() - 1)];
-            state.input.clear();
-            state.input.insert_str(&format!("/{} ", selected.name));
-            state.palette_index = 0;
-            Ok(Some(false))
-        }
-        KeyCode::Enter => {
-            let selected_name = palette[state.palette_index.min(palette.len() - 1)].name;
-            state.input.clear();
-            state.palette_index = 0;
-            dispatch_command(out, prompt, state, backend, selected_name).map(Some)
-        }
-        _ => Ok(None),
-    }
-}
-
-fn vertical_delta(code: KeyCode) -> i32 {
-    if matches!(code, KeyCode::Up) {
-        -1
-    } else {
-        1
     }
 }
 
@@ -159,7 +184,6 @@ fn submit_input<W: Write>(
     backend: &Backend,
 ) -> Result<bool> {
     let input = state.input.clear();
-    state.palette_index = 0;
 
     if let Some(rest) = input.strip_prefix('/') {
         return dispatch_command(out, prompt, state, backend, rest);
@@ -179,23 +203,7 @@ fn dispatch_command<W: Write>(
     backend: &Backend,
     input: &str,
 ) -> Result<bool> {
-    match commands::dispatch(input, state.is_busy()) {
-        Ok(CommandAction::NewSession) => {
-            let _ = backend.commands.send(BackendCommand::NewSession);
-            Ok(false)
-        }
-        Ok(CommandAction::OpenSessions) => {
-            let _ = backend.commands.send(BackendCommand::ListSessions);
-            Ok(false)
-        }
-        Ok(CommandAction::ShowHelp) => {
-            emit_entry(out, prompt, &Entry::Assistant(commands::help_text()))?;
-            Ok(false)
-        }
-        Ok(CommandAction::Quit) => Ok(true),
-        Err(error) => {
-            emit_entry(out, prompt, &Entry::Error(error.to_string()))?;
-            Ok(false)
-        }
-    }
+    let outcome = commands::dispatch_outcome(input, state.is_busy());
+    let (quit, _keep) = apply_outcome(out, prompt, state, backend, outcome)?;
+    Ok(quit)
 }
