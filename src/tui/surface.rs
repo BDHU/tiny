@@ -3,8 +3,8 @@ use crossterm::style::Color;
 
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Style {
-    pub(crate) fg: Option<Color>,
-    pub(crate) bold: bool,
+    fg: Option<Color>,
+    bold: bool,
 }
 
 impl Style {
@@ -19,11 +19,19 @@ impl Style {
         self.bold = true;
         self
     }
+
+    pub(crate) fn fg_color(&self) -> Option<Color> {
+        self.fg
+    }
+
+    pub(crate) fn is_bold(&self) -> bool {
+        self.bold
+    }
 }
 
 pub(crate) struct Span {
-    pub(crate) text: String,
-    pub(crate) style: Style,
+    text: String,
+    style: Style,
 }
 
 impl Span {
@@ -33,11 +41,19 @@ impl Span {
             style,
         }
     }
+
+    pub(crate) fn text(&self) -> &str {
+        &self.text
+    }
+
+    pub(crate) fn style(&self) -> Style {
+        self.style
+    }
 }
 
 #[derive(Default)]
 pub(crate) struct Line {
-    pub(crate) spans: Vec<Span>,
+    spans: Vec<Span>,
 }
 
 impl Line {
@@ -46,11 +62,15 @@ impl Line {
             spans: vec![Span::new(text, style)],
         }
     }
+
+    pub(crate) fn spans(&self) -> &[Span] {
+        &self.spans
+    }
 }
 
 #[derive(Default)]
 pub(crate) struct Surface {
-    pub(crate) lines: Vec<Line>,
+    lines: Vec<Line>,
 }
 
 impl Surface {
@@ -61,6 +81,14 @@ impl Surface {
     pub(crate) fn line(mut self, line: Line) -> Self {
         self.lines.push(line);
         self
+    }
+
+    pub(crate) fn push_line(&mut self, line: Line) {
+        self.lines.push(line);
+    }
+
+    pub(crate) fn lines(&self) -> &[Line] {
+        &self.lines
     }
 }
 
