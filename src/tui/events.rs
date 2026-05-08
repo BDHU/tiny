@@ -9,7 +9,7 @@ use crate::tui::{
 use anyhow::Result;
 use crossterm::{cursor::MoveTo, queue, terminal};
 use std::io::Write;
-use tiny::Message;
+use tiny::{Message, SessionMeta};
 
 pub(crate) fn handle_backend_event<W: Write>(
     out: &mut W,
@@ -42,39 +42,7 @@ pub(crate) fn handle_backend_event<W: Write>(
             state.turn = None;
         }
         BackendEvent::SessionChanged { meta, history } => {
-            let is_initial = state.session.is_none();
-            state.set_session(meta, &history);
-            if !is_initial {
-                prompt.clear(out)?;
-                if history.is_empty() {
-                    // /new — scroll the visible chat into scrollback so
-                    // the next render anchors the prompt at the top with
-                    // no gap. After prompt.clear() the cursor is at the
-                    // top of where the prompt was (call that row K).
-                    // Emitting term_rows-1 newlines walks the cursor
-                    // down to the bottom (T-1-K newlines) and then each
-                    // remaining newline scrolls one row into scrollback,
-                    // for K rows total — exactly the chat content,
-                    // regardless of K.
-                    let (_, term_rows) = terminal::size().unwrap_or((80, 24));
-                    for _ in 0..term_rows.saturating_sub(1) {
-                        out.write_all(b"\r\n")?;
-                    }
-                    queue!(out, MoveTo(0, 0))?;
-                } else {
-                    print::print_separator(out)?;
-                }
-                out.flush()?;
-            }
-            if !history.is_empty() {
-                prompt.clear(out)?;
-                for message in history {
-                    for entry in print::entries_from_message(message) {
-                        print::print_entry(out, &entry)?;
-                    }
-                }
-                out.flush()?;
-            }
+            handle_session_changed(out, prompt, state, meta, history)?;
         }
         BackendEvent::SessionsListed(Ok(sessions)) => {
             if sessions.is_empty() {
@@ -105,6 +73,63 @@ pub(crate) fn handle_backend_event<W: Write>(
 pub(crate) fn emit_entry<W: Write>(out: &mut W, prompt: &mut Prompt, entry: &Entry) -> Result<()> {
     prompt.clear(out)?;
     print::print_entry(out, entry)?;
+    out.flush()?;
+    Ok(())
+}
+
+fn handle_session_changed<W: Write>(
+    out: &mut W,
+    prompt: &mut Prompt,
+    state: &mut AppState,
+    meta: SessionMeta,
+    history: Vec<Message>,
+) -> Result<()> {
+    let is_initial = state.session.is_none();
+    state.set_session(meta, &history);
+
+    if !is_initial {
+        separate_previous_session(out, prompt, history.is_empty())?;
+    }
+    print_history(out, prompt, history)
+}
+
+fn separate_previous_session<W: Write>(
+    out: &mut W,
+    prompt: &mut Prompt,
+    new_session_is_empty: bool,
+) -> Result<()> {
+    prompt.clear(out)?;
+    if new_session_is_empty {
+        scroll_visible_chat_into_scrollback(out)?;
+    } else {
+        print::print_separator(out)?;
+    }
+    out.flush()?;
+    Ok(())
+}
+
+fn scroll_visible_chat_into_scrollback<W: Write>(out: &mut W) -> Result<()> {
+    // /new: after prompt.clear(), emit enough newlines to push the visible
+    // chat into scrollback before anchoring the next prompt at the top.
+    let (_, term_rows) = terminal::size().unwrap_or((80, 24));
+    for _ in 0..term_rows.saturating_sub(1) {
+        out.write_all(b"\r\n")?;
+    }
+    queue!(out, MoveTo(0, 0))?;
+    Ok(())
+}
+
+fn print_history<W: Write>(out: &mut W, prompt: &mut Prompt, history: Vec<Message>) -> Result<()> {
+    if history.is_empty() {
+        return Ok(());
+    }
+
+    prompt.clear(out)?;
+    for message in history {
+        for entry in print::entries_from_message(message) {
+            print::print_entry(out, &entry)?;
+        }
+    }
     out.flush()?;
     Ok(())
 }
