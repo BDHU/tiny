@@ -77,7 +77,7 @@ fn dispatch_takeover<W: Write>(
             Ok(None)
         }
         KeyDispatch::Consumed(outcome) => {
-            let (quit, keep) = apply_outcome(out, prompt, state, backend, outcome)?;
+            let (quit, keep) = apply_outcome(out, prompt, backend, outcome)?;
             if keep {
                 state.modal = Some(modal);
             }
@@ -102,7 +102,7 @@ fn dispatch_overlay<W: Write>(
     match dispatch {
         KeyDispatch::PassThrough => Ok(None),
         KeyDispatch::Consumed(outcome) => {
-            let (quit, _keep) = apply_outcome(out, prompt, state, backend, outcome)?;
+            let (quit, _keep) = apply_outcome(out, prompt, backend, outcome)?;
             Ok(Some(quit))
         }
     }
@@ -113,7 +113,6 @@ fn dispatch_overlay<W: Write>(
 fn apply_outcome<W: Write>(
     out: &mut W,
     prompt: &mut Prompt,
-    _state: &mut AppState,
     backend: &Backend,
     outcome: ModalOutcome,
 ) -> Result<(bool, bool)> {
@@ -204,6 +203,6 @@ fn dispatch_command<W: Write>(
     input: &str,
 ) -> Result<bool> {
     let outcome = commands::dispatch_outcome(input, state.is_busy());
-    let (quit, _keep) = apply_outcome(out, prompt, state, backend, outcome)?;
+    let (quit, _keep) = apply_outcome(out, prompt, backend, outcome)?;
     Ok(quit)
 }
