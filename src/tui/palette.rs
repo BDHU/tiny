@@ -54,7 +54,7 @@ impl Modal for CommandPalette {
         let mut surface = Surface::new();
         for offset in 0..visible {
             let i = start + offset;
-            surface = surface.line(palette_row(matches[i], name_width, i == selected));
+            surface.push_line(palette_row(matches[i], name_width, i == selected));
         }
         surface
     }

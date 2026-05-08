@@ -24,10 +24,6 @@ impl SessionPicker {
         }
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
-        self.sessions.is_empty()
-    }
-
     fn move_by(&mut self, delta: i32) {
         let len = self.sessions.len() as i32;
         if len == 0 {
@@ -37,8 +33,7 @@ impl SessionPicker {
     }
 
     fn selected_id(&self) -> Option<SessionId> {
-        let idx = self.selected.min(self.sessions.len().checked_sub(1)?);
-        self.sessions.get(idx).map(|m| m.id.clone())
+        self.sessions.get(self.selected).map(|m| m.id.clone())
     }
 
     fn visible_range(&self, max_rows: usize) -> Range<usize> {
@@ -55,11 +50,11 @@ impl SessionPicker {
 
 impl Modal for SessionPicker {
     fn render(&self, ctx: RenderCtx<'_>) -> Surface {
-        if self.is_empty() || ctx.max_rows < 2 {
+        if self.sessions.is_empty() || ctx.max_rows < 2 {
             return Surface::new();
         }
         let items_budget = (ctx.max_rows - 1).min(20);
-        let selected_index = self.selected.min(self.sessions.len() - 1);
+        let selected_index = self.selected;
         let mut surface = Surface::new().line(Line::styled(
             " sessions · enter resume · esc cancel ",
             Style::fg(theme::DIM),
@@ -79,7 +74,7 @@ impl Modal for SessionPicker {
                 meta.title.as_str()
             };
             let text = format!(" {marker}{active_marker} {title}");
-            surface = surface.line(choice_line(text, is_selected));
+            surface.push_line(choice_line(text, is_selected));
         }
         surface
     }
