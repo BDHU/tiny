@@ -62,10 +62,6 @@ impl Surface {
         self.lines.push(line);
         self
     }
-
-    pub(crate) fn is_empty(&self) -> bool {
-        self.lines.is_empty()
-    }
 }
 
 pub(crate) struct RenderCtx<'a> {

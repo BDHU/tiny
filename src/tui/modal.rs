@@ -7,6 +7,10 @@
 //     navigation keys but pass everything else through to default handling.
 //     Currently houses the slash-command palette.
 //
+// Modals render in the panel area below the draft input. The prompt owns the
+// input row so an in-progress draft remains visible and cursor-addressable
+// while a modal is open.
+//
 // Both go through this trait; the dispatcher in `keys.rs` decides routing.
 
 use crate::backend::BackendCommand;
@@ -14,15 +18,6 @@ use crate::tui::print::Entry;
 use crate::tui::state::AppState;
 use crate::tui::surface::{RenderCtx, Surface};
 use crossterm::event::KeyEvent;
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ModalSlot {
-    /// Replaces the input row. Cursor is parked at column 0 of that row.
-    Input,
-    /// Renders in the variable-height panel area below the input, above the
-    /// status row. Cursor stays on the input.
-    Panel,
-}
 
 pub(crate) enum ModalOutcome {
     /// Stay open; no side effect.
@@ -47,8 +42,6 @@ pub(crate) enum KeyDispatch {
 }
 
 pub(crate) trait Modal {
-    fn slot(&self) -> ModalSlot;
-
     /// Whether to render this frame. Default: always. Overlays override to
     /// hide themselves when their trigger isn't satisfied (e.g. palette
     /// hides when input doesn't start with `/`).
