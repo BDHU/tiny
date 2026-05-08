@@ -7,11 +7,12 @@ use crate::tui::{
 use anyhow::Result;
 use std::io::Write;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tiny::AgentConfig;
 use tokio::sync::mpsc;
 
 const TICK_INTERVAL: Duration = Duration::from_millis(80);
+const INPUT_ACTIVITY_GRACE: Duration = Duration::from_millis(250);
 
 pub(crate) async fn run<W: Write>(
     out: &mut W,
@@ -25,6 +26,7 @@ pub(crate) async fn run<W: Write>(
     let _reader = reader::spawn(reader_tx);
     let mut ticker = tokio::time::interval(TICK_INTERVAL);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut last_input_at: Option<Instant> = None;
 
     let cwd = std::env::current_dir().unwrap_or_default();
     print::print_intro(out, &model, &cwd.display().to_string())?;
@@ -34,7 +36,10 @@ pub(crate) async fn run<W: Write>(
     loop {
         tokio::select! {
             _ = ticker.tick() => {
-                if state.is_busy() {
+                let input_recent = last_input_at
+                    .map(|at| at.elapsed() < INPUT_ACTIVITY_GRACE)
+                    .unwrap_or(false);
+                if state.is_busy() && !input_recent {
                     render_screen(out, &mut prompt, &state)?;
                 }
             }
@@ -47,7 +52,15 @@ pub(crate) async fn run<W: Write>(
             }
             event = reader_rx.recv() => {
                 let Some(event) = event else { break };
-                if handle_input_event(out, &mut prompt, &mut state, &backend, event)? {
+                let mut should_quit = handle_input_event(out, &mut prompt, &mut state, &backend, event)?;
+                while !should_quit {
+                    let Ok(event) = reader_rx.try_recv() else {
+                        break;
+                    };
+                    should_quit = handle_input_event(out, &mut prompt, &mut state, &backend, event)?;
+                }
+                last_input_at = Some(Instant::now());
+                if should_quit {
                     break;
                 }
                 render_screen(out, &mut prompt, &state)?;
