@@ -1,4 +1,4 @@
-use crate::tui::{input::InputBuffer, modal::Modal};
+use crate::tui::{input::InputBuffer, modal::Modal, palette::CommandPalette};
 use std::time::Instant;
 use tiny::{Message, SessionMeta};
 
@@ -15,9 +15,12 @@ pub(crate) struct SessionState {
 
 pub(crate) struct AppState {
     pub(crate) input: InputBuffer,
-    pub(crate) palette_index: usize,
     pub(crate) session: Option<SessionState>,
+    /// Takeover modal: when set, every key is routed here.
     pub(crate) modal: Option<Box<dyn Modal>>,
+    /// Ambient overlay: rendered when its `is_visible` allows; consumes
+    /// navigation keys but passes others through. Always installed.
+    pub(crate) overlay: Option<Box<dyn Modal>>,
     pub(crate) turn: Option<TurnState>,
     pub(crate) directory_label: String,
 }
@@ -31,9 +34,9 @@ impl AppState {
             .unwrap_or_else(|| cwd.display().to_string());
         Self {
             input: InputBuffer::default(),
-            palette_index: 0,
             session: None,
             modal: None,
+            overlay: Some(Box::new(CommandPalette::default())),
             turn: None,
             directory_label,
         }
