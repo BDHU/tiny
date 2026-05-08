@@ -1,15 +1,11 @@
-use crate::backend::{Backend, BackendCommand};
+use crate::backend::BackendCommand;
 use crate::tui::{
-    modal::{Modal, ModalOutcome, ModalSlot},
-    prompt::{fit_line, write_choice_line, Frame},
+    modal::{KeyDispatch, Modal, ModalOutcome, ModalSlot},
+    state::AppState,
+    surface::{choice_line, Line, RenderCtx, Style, Surface},
     theme,
 };
-use crossterm::{
-    event::{KeyCode, KeyEvent, KeyModifiers},
-    queue,
-    style::{Print, ResetColor, SetForegroundColor},
-};
-use std::io;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::ops::Range;
 use tiny::{SessionId, SessionMeta};
 
@@ -62,23 +58,16 @@ impl Modal for SessionPicker {
         ModalSlot::Panel
     }
 
-    fn render(&self, frame: &mut Frame, term_cols: u16, max_rows: usize) -> io::Result<()> {
-        if self.is_empty() || max_rows < 2 {
-            return Ok(());
+    fn render(&self, ctx: RenderCtx<'_>) -> Surface {
+        if self.is_empty() || ctx.max_rows < 2 {
+            return Surface::new();
         }
-        let items_budget = (max_rows - 1).min(20);
+        let items_budget = (ctx.max_rows - 1).min(20);
         let selected_index = self.selected.min(self.sessions.len() - 1);
-
-        frame.row()?;
-        queue!(
-            frame,
-            SetForegroundColor(theme::DIM),
-            Print(fit_line(
-                " sessions · enter resume · esc cancel ",
-                term_cols
-            )),
-            ResetColor,
-        )?;
+        let mut surface = Surface::new().line(Line::styled(
+            " sessions · enter resume · esc cancel ",
+            Style::fg(theme::DIM),
+        ));
 
         for i in self.visible_range(items_budget) {
             let Some(meta) = self.sessions.get(i) else {
@@ -94,33 +83,31 @@ impl Modal for SessionPicker {
                 meta.title.as_str()
             };
             let text = format!(" {marker}{active_marker} {title}");
-
-            frame.row()?;
-            write_choice_line(frame, &text, is_selected, term_cols)?;
+            surface = surface.line(choice_line(text, is_selected));
         }
-        Ok(())
+        surface
     }
 
-    fn handle_key(&mut self, key: KeyEvent, backend: &Backend) -> ModalOutcome {
+    fn handle_key(&mut self, key: KeyEvent, _state: &mut AppState) -> KeyDispatch {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
-            KeyCode::Char('c') if ctrl => ModalOutcome::Quit,
+            KeyCode::Char('c') if ctrl => KeyDispatch::Consumed(ModalOutcome::Quit),
             KeyCode::Up => {
                 self.move_by(-1);
-                ModalOutcome::Continue
+                KeyDispatch::Consumed(ModalOutcome::Continue)
             }
             KeyCode::Down => {
                 self.move_by(1);
-                ModalOutcome::Continue
+                KeyDispatch::Consumed(ModalOutcome::Continue)
             }
-            KeyCode::Enter => {
-                if let Some(id) = self.selected_id() {
-                    let _ = backend.commands.send(BackendCommand::SwitchSession(id));
-                }
-                ModalOutcome::Close
-            }
-            KeyCode::Esc => ModalOutcome::Close,
-            _ => ModalOutcome::Continue,
+            KeyCode::Enter => match self.selected_id() {
+                Some(id) => KeyDispatch::Consumed(ModalOutcome::EmitAndClose(
+                    BackendCommand::SwitchSession(id),
+                )),
+                None => KeyDispatch::Consumed(ModalOutcome::Close),
+            },
+            KeyCode::Esc => KeyDispatch::Consumed(ModalOutcome::Close),
+            _ => KeyDispatch::Consumed(ModalOutcome::Continue),
         }
     }
 }
