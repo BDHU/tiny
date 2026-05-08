@@ -1,5 +1,6 @@
 mod commands;
 mod events;
+mod frame;
 mod input;
 mod keys;
 mod modal;
@@ -8,11 +9,13 @@ mod permission;
 mod picker;
 mod print;
 mod prompt;
+mod prompt_input;
 mod reader;
 mod render;
 mod run;
 mod runtime;
 mod state;
+mod status;
 mod surface;
 mod theme;
 
