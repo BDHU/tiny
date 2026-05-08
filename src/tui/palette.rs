@@ -4,7 +4,7 @@
 
 use crate::tui::{
     commands::{self, Command},
-    modal::{KeyDispatch, Modal, ModalOutcome, ModalSlot},
+    modal::{KeyDispatch, Modal, ModalOutcome},
     state::AppState,
     surface::{choice_line, RenderCtx, Surface},
 };
@@ -33,10 +33,6 @@ impl CommandPalette {
 }
 
 impl Modal for CommandPalette {
-    fn slot(&self) -> ModalSlot {
-        ModalSlot::Panel
-    }
-
     fn is_visible(&self, state: &AppState) -> bool {
         !Self::matches_for(state).is_empty()
     }

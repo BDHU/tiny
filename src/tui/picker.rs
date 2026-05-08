@@ -1,6 +1,6 @@
 use crate::backend::BackendCommand;
 use crate::tui::{
-    modal::{KeyDispatch, Modal, ModalOutcome, ModalSlot},
+    modal::{KeyDispatch, Modal, ModalOutcome},
     state::AppState,
     surface::{choice_line, Line, RenderCtx, Style, Surface},
     theme,
@@ -54,10 +54,6 @@ impl SessionPicker {
 }
 
 impl Modal for SessionPicker {
-    fn slot(&self) -> ModalSlot {
-        ModalSlot::Panel
-    }
-
     fn render(&self, ctx: RenderCtx<'_>) -> Surface {
         if self.is_empty() || ctx.max_rows < 2 {
             return Surface::new();

@@ -1,6 +1,6 @@
 use crate::backend::{BackendCommand, PermissionId};
 use crate::tui::{
-    modal::{KeyDispatch, Modal, ModalOutcome, ModalSlot},
+    modal::{KeyDispatch, Modal, ModalOutcome},
     print,
     state::AppState,
     surface::{Line, RenderCtx, Style, Surface},
@@ -21,10 +21,6 @@ impl PermissionPromptModal {
 }
 
 impl Modal for PermissionPromptModal {
-    fn slot(&self) -> ModalSlot {
-        ModalSlot::Panel
-    }
-
     fn render(&self, ctx: RenderCtx<'_>) -> Surface {
         if ctx.max_rows == 0 {
             return Surface::new();
