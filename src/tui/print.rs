@@ -123,9 +123,7 @@ pub(crate) fn print_assistant<W: Write>(out: &mut W, text: &str) -> io::Result<(
 
 pub(crate) fn print_tool_call<W: Write>(out: &mut W, name: &str, args: &Value) -> io::Result<()> {
     let cols = terminal::size().map(|(cols, _)| cols).unwrap_or(80);
-    let fixed_cols = theme::GUTTER.chars().count() + 2 + name.chars().count() + 2;
-    let preview_cols = usize::from(cols.saturating_sub(1)).saturating_sub(fixed_cols);
-    let args_preview = preview_fit(&args.to_string(), preview_cols);
+    let args_preview = tool_call_args_preview(name, args, cols);
     queue!(
         out,
         Print(NL),
@@ -142,6 +140,12 @@ pub(crate) fn print_tool_call<W: Write>(out: &mut W, name: &str, args: &Value) -
         ResetColor,
         Print(NL),
     )
+}
+
+fn tool_call_args_preview(name: &str, args: &Value, cols: u16) -> String {
+    let fixed_cols = theme::GUTTER.chars().count() + 2 + name.chars().count() + 2;
+    let preview_cols = usize::from(cols.saturating_sub(1)).saturating_sub(fixed_cols);
+    preview_fit(&args.to_string(), preview_cols)
 }
 
 pub(crate) fn print_tool_result<W: Write>(
@@ -316,4 +320,26 @@ fn print_inline_code<W: Write>(out: &mut W, text: &str) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tool_call_args_preview;
+    use crate::tui::theme;
+    use serde_json::json;
+
+    #[test]
+    fn tool_call_preview_fits_terminal_width() {
+        let cols = 40;
+        let name = "bash";
+        let args = json!({
+            "command": "git add -N src/tui.rs src/tui/commands.rs src/tui/prompt.rs"
+        });
+
+        let preview = tool_call_args_preview(name, &args, cols);
+        let rendered_cols =
+            theme::GUTTER.chars().count() + 2 + name.chars().count() + 2 + preview.chars().count();
+
+        assert!(rendered_cols <= usize::from(cols - 1));
+    }
 }
