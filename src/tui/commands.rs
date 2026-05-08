@@ -9,6 +9,7 @@ use std::fmt;
 pub(crate) enum CommandAction {
     NewSession,
     OpenSessions,
+    Compact,
     ShowHelp,
     Quit,
 }
@@ -53,6 +54,12 @@ const COMMANDS: &[Command] = &[
         help: "pick a saved session to resume",
         idle_only: true,
         action: CommandAction::OpenSessions,
+    },
+    Command {
+        name: "compact",
+        help: "summarize older history into a single message",
+        idle_only: true,
+        action: CommandAction::Compact,
     },
     Command {
         name: "help",
@@ -110,6 +117,7 @@ pub(crate) fn dispatch_outcome(input: &str, busy: bool) -> ModalOutcome {
     match dispatch(input, busy) {
         Ok(CommandAction::NewSession) => ModalOutcome::Emit(BackendCommand::NewSession),
         Ok(CommandAction::OpenSessions) => ModalOutcome::Emit(BackendCommand::ListSessions),
+        Ok(CommandAction::Compact) => ModalOutcome::Emit(BackendCommand::Compact),
         Ok(CommandAction::ShowHelp) => ModalOutcome::Print(Entry::Assistant(help_text())),
         Ok(CommandAction::Quit) => ModalOutcome::Quit,
         Err(error) => ModalOutcome::Print(Entry::Error(error.to_string())),
@@ -135,7 +143,7 @@ mod tests {
             palette_matches(input).into_iter().map(|c| c.name).collect()
         };
 
-        assert_eq!(names("/"), vec!["new", "sessions", "help", "quit"]);
+        assert_eq!(names("/"), vec!["new", "sessions", "compact", "help", "quit"]);
         assert_eq!(names("/se"), vec!["sessions"]);
         assert_eq!(names("/h"), vec!["help"]);
         assert!(names("/x").is_empty());

@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod compact;
 pub mod openai;
 pub mod session;
 pub mod tool;

@@ -17,6 +17,7 @@ pub(crate) enum BackendCommand {
     NewSession,
     ListSessions,
     SwitchSession(SessionId),
+    Compact,
 }
 
 pub(crate) enum BackendEvent {
@@ -153,6 +154,7 @@ async fn next_input(
             BackendCommand::NewSession => handle_new_session(active, config, events),
             BackendCommand::ListSessions => handle_list_sessions(events),
             BackendCommand::SwitchSession(id) => handle_switch_session(active, config, &id, events),
+            BackendCommand::Compact => handle_compact(active, events).await,
         }
     }
 }
@@ -185,7 +187,10 @@ async fn run_turn(
                     BackendCommand::Submit(input) => queue.push_back(input),
                     BackendCommand::PermissionDecision { id, decision } => pending.resolve(id, decision),
                     // Session changes mid-turn are rejected at the UI; drop any that slip through.
-                    BackendCommand::NewSession | BackendCommand::ListSessions | BackendCommand::SwitchSession(_) => {}
+                    BackendCommand::NewSession
+                    | BackendCommand::ListSessions
+                    | BackendCommand::SwitchSession(_)
+                    | BackendCommand::Compact => {}
                 },
             }
         }
@@ -233,6 +238,10 @@ fn persist_active(active: &mut Active, events: &mpsc::UnboundedSender<BackendEve
     if active.agent.history.len() <= active.session.history.len() {
         return;
     }
+    save_active(active, events);
+}
+
+fn save_active(active: &mut Active, events: &mpsc::UnboundedSender<BackendEvent>) {
     active.session.history = active.agent.history.clone();
     active.session.ensure_title();
     active.session.touch();
@@ -242,6 +251,27 @@ fn persist_active(active: &mut Active, events: &mpsc::UnboundedSender<BackendEve
             "save {}: {error}",
             active.session.id.as_str()
         )));
+    }
+}
+
+async fn handle_compact(active: &mut Active, events: &mpsc::UnboundedSender<BackendEvent>) {
+    let _ = events.send(BackendEvent::TurnStarted);
+    let result = active.agent.compact().await;
+    let _ = events.send(BackendEvent::TurnDone);
+
+    match result {
+        Ok(true) => {
+            save_active(active, events);
+            announce_session(active, events);
+        }
+        Ok(false) => {
+            let _ = events.send(BackendEvent::SessionError(
+                "nothing to compact (session is empty)".into(),
+            ));
+        }
+        Err(error) => {
+            let _ = events.send(BackendEvent::SessionError(format!("compact: {error}")));
+        }
     }
 }
 

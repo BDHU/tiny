@@ -1,3 +1,4 @@
+use crate::compact;
 use crate::tool::{boxed_tool, ErasedTool, Tool};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -62,6 +63,7 @@ pub struct AgentConfig {
     provider: Box<dyn Provider>,
     tools: Vec<Box<dyn ErasedTool>>,
     system: String,
+    compact_threshold: usize,
 }
 
 impl AgentConfig {
@@ -70,6 +72,7 @@ impl AgentConfig {
             provider: Box::new(provider),
             tools: Vec::new(),
             system: system.into(),
+            compact_threshold: compact::DEFAULT_THRESHOLD,
         }
     }
 
@@ -80,6 +83,11 @@ impl AgentConfig {
 
     pub fn with_tools(mut self, tools: impl IntoIterator<Item = Box<dyn ErasedTool>>) -> Self {
         self.tools.extend(tools);
+        self
+    }
+
+    pub fn with_compact_threshold(mut self, chars: usize) -> Self {
+        self.compact_threshold = chars;
         self
     }
 }
@@ -94,6 +102,10 @@ impl Agent {
         Self { config, history }
     }
 
+    pub async fn compact(&mut self) -> Result<bool> {
+        compact::compact_now(&mut self.history, &*self.config.provider).await
+    }
+
     pub async fn send(
         &mut self,
         user_input: impl Into<String>,
@@ -102,6 +114,13 @@ impl Agent {
         let result = self.run_turn(user_input.into(), events).await;
         if let Err(error) = &result {
             let _ = events.send(Event::TurnError(error.to_string()));
+        } else {
+            let _ = compact::compact_if_needed(
+                &mut self.history,
+                &*self.config.provider,
+                self.config.compact_threshold,
+            )
+            .await;
         }
         let _ = events.send(Event::TurnDone);
         result
