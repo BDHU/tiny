@@ -2,6 +2,7 @@ use crate::tui::theme;
 use crossterm::{
     queue,
     style::{Attribute, Print, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor},
+    terminal,
     terminal::{Clear, ClearType},
 };
 use serde_json::Value;
@@ -121,7 +122,10 @@ pub(crate) fn print_assistant<W: Write>(out: &mut W, text: &str) -> io::Result<(
 }
 
 pub(crate) fn print_tool_call<W: Write>(out: &mut W, name: &str, args: &Value) -> io::Result<()> {
-    let args_preview = preview(&args.to_string(), 60);
+    let cols = terminal::size().map(|(cols, _)| cols).unwrap_or(80);
+    let fixed_cols = theme::GUTTER.chars().count() + 2 + name.chars().count() + 2;
+    let preview_cols = usize::from(cols.saturating_sub(1)).saturating_sub(fixed_cols);
+    let args_preview = preview_fit(&args.to_string(), preview_cols);
     queue!(
         out,
         Print(NL),
@@ -134,6 +138,7 @@ pub(crate) fn print_tool_call<W: Write>(out: &mut W, name: &str, args: &Value) -
         ResetColor,
         SetForegroundColor(theme::DIM),
         Print(format!("({args_preview})")),
+        Clear(ClearType::UntilNewLine),
         ResetColor,
         Print(NL),
     )
@@ -236,6 +241,20 @@ pub(crate) fn preview(text: &str, limit: usize) -> String {
         format!("{short}...")
     } else {
         short
+    }
+}
+
+fn preview_fit(text: &str, max_cols: usize) -> String {
+    let mut chars = text.chars();
+    let short: String = chars.by_ref().take(max_cols).collect();
+    if chars.next().is_none() {
+        return short;
+    }
+    if max_cols <= 3 {
+        ".".repeat(max_cols)
+    } else {
+        let prefix: String = text.chars().take(max_cols - 3).collect();
+        format!("{prefix}...")
     }
 }
 
