@@ -4,24 +4,40 @@ use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
-pub struct OpenAiProvider {
-    api_key: String,
+pub struct OpenAiCompatibleProvider {
+    name: &'static str,
+    base_url: String,
+    api_key: Option<String>,
     model: String,
     client: reqwest::Client,
 }
 
-impl OpenAiProvider {
-    pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Self {
+impl OpenAiCompatibleProvider {
+    pub fn new(
+        name: &'static str,
+        base_url: impl Into<String>,
+        api_key: Option<String>,
+        model: impl Into<String>,
+    ) -> Self {
         Self {
-            api_key: api_key.into(),
+            name,
+            base_url: base_url.into(),
+            api_key,
             model: model.into(),
             client: reqwest::Client::new(),
         }
     }
+
+    fn chat_completions_url(&self) -> String {
+        format!(
+            "{}/v1/chat/completions",
+            self.base_url.trim_end_matches('/')
+        )
+    }
 }
 
 #[async_trait]
-impl Provider for OpenAiProvider {
+impl Provider for OpenAiCompatibleProvider {
     async fn complete(
         &self,
         system: &str,
@@ -45,19 +61,20 @@ impl Provider for OpenAiProvider {
                 .collect::<Vec<_>>());
         }
 
-        let response = self
-            .client
-            .post("https://api.openai.com/v1/chat/completions")
-            .bearer_auth(&self.api_key)
-            .json(&body)
+        let mut request = self.client.post(self.chat_completions_url()).json(&body);
+        if let Some(api_key) = &self.api_key {
+            request = request.bearer_auth(api_key);
+        }
+
+        let response = request
             .send()
             .await
-            .context("openai request failed")?;
+            .with_context(|| format!("{} request failed", self.name))?;
 
         let status = response.status();
         let text = response.text().await.context("read response body")?;
         if !status.is_success() {
-            return Err(anyhow!("openai {}: {}", status, text));
+            return Err(anyhow!("{} {}: {}", self.name, status, text));
         }
 
         let value: Value = serde_json::from_str(&text).context("parse response json")?;
