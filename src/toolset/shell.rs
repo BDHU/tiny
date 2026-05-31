@@ -13,6 +13,11 @@ pub struct BashArgs {
 
 pub struct BashTool;
 
+#[cfg(target_os = "macos")]
+const DEFAULT_SHELL: &str = "/bin/zsh";
+#[cfg(not(target_os = "macos"))]
+const DEFAULT_SHELL: &str = "/bin/sh";
+
 #[async_trait]
 impl Tool for BashTool {
     type Args = BashArgs;
@@ -22,11 +27,11 @@ impl Tool for BashTool {
     }
 
     fn description(&self) -> &str {
-        "Run a shell command via /bin/sh -c and return combined stdout/stderr and exit status."
+        "Run a shell command via the platform default shell and return combined stdout/stderr and exit status."
     }
 
     async fn call(&self, args: BashArgs) -> Result<String> {
-        let output = Command::new("/bin/sh")
+        let output = Command::new(DEFAULT_SHELL)
             .arg("-c")
             .arg(args.command)
             .output()
