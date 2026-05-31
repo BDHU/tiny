@@ -1,9 +1,8 @@
-use anyhow::{Context, Result};
-use serde::Deserialize;
-use std::path::PathBuf;
+use anyhow::Result;
 use std::sync::Arc;
-use tiny::{AgentConfig, ErasedTool, OpenAiProvider};
+use tiny::ErasedTool;
 
+mod app_config;
 mod backend;
 mod tools;
 mod toolset;
@@ -12,43 +11,14 @@ mod web;
 mod web_fetch;
 mod web_search;
 
-#[derive(Deserialize, Default)]
-struct Config {
-    api_key: Option<String>,
-    model: Option<String>,
-}
-
-fn load_config() -> Result<Config> {
-    if let Ok(text) = std::fs::read_to_string("tiny.json") {
-        return Ok(serde_json::from_str(&text)?);
-    }
-
-    if let Some(home) = std::env::var_os("HOME") {
-        let path = PathBuf::from(home).join(".tiny").join("config.json");
-        if let Ok(text) = std::fs::read_to_string(path) {
-            return Ok(serde_json::from_str(&text)?);
-        }
-    }
-
-    Ok(Config::default())
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cfg = load_config()?;
-    let api_key = cfg
-        .api_key
-        .or_else(|| std::env::var("OPENAI_API_KEY").ok())
-        .context("set api_key in tiny.json or OPENAI_API_KEY in your environment")?;
-    let model = cfg.model.unwrap_or_else(|| "gpt-4o-mini".to_string());
+    let cfg = app_config::load_config()?;
     let tools = tools::default_tools();
     let system = default_system_prompt(&tools);
+    let (config, model) = cfg.agent_config(system, tools)?;
 
-    let config = Arc::new(
-        AgentConfig::new(OpenAiProvider::new(api_key, model.clone()), system).with_tools(tools),
-    );
-
-    tui::run(config, model).await
+    tui::run(Arc::new(config), model).await
 }
 
 fn default_system_prompt(tools: &[Box<dyn ErasedTool>]) -> String {
