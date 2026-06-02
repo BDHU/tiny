@@ -1,6 +1,6 @@
 use anyhow::Result;
 use std::sync::Arc;
-use tiny::ErasedTool;
+use tiny::{AgentConfig, ErasedTool};
 
 mod app_config;
 mod backend;
@@ -14,9 +14,10 @@ mod web_search;
 #[tokio::main]
 async fn main() -> Result<()> {
     let cfg = app_config::load_config()?;
+    let (provider, model) = cfg.provider()?;
     let tools = tools::default_tools();
     let system = default_system_prompt(&tools);
-    let (config, model) = cfg.agent_config(system, tools)?;
+    let config = AgentConfig::new_with_provider(provider, system).with_tools(tools);
 
     tui::run(Arc::new(config), model).await
 }

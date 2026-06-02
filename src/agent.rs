@@ -60,7 +60,7 @@ pub enum Event {
 pub type EventSender = mpsc::UnboundedSender<Event>;
 
 pub struct AgentConfig {
-    provider: Box<dyn Provider>,
+    provider: Arc<dyn Provider>,
     tools: Vec<Box<dyn ErasedTool>>,
     system: String,
     compact_threshold: usize,
@@ -68,8 +68,12 @@ pub struct AgentConfig {
 
 impl AgentConfig {
     pub fn new(provider: impl Provider + 'static, system: impl Into<String>) -> Self {
+        Self::new_with_provider(Arc::new(provider), system)
+    }
+
+    pub fn new_with_provider(provider: Arc<dyn Provider>, system: impl Into<String>) -> Self {
         Self {
-            provider: Box::new(provider),
+            provider,
             tools: Vec::new(),
             system: system.into(),
             compact_threshold: compact::DEFAULT_THRESHOLD,

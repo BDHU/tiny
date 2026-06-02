@@ -1,8 +1,9 @@
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tiny::providers::{LlamaCppProvider, OmlxProvider, OpenAiProvider};
-use tiny::{AgentConfig, ErasedTool};
+use tiny::Provider;
 
 #[derive(Deserialize, Default)]
 pub struct Config {
@@ -55,25 +56,21 @@ impl ProviderChoice {
 }
 
 impl Config {
-    pub fn agent_config(
-        &self,
-        system: String,
-        tools: Vec<Box<dyn ErasedTool>>,
-    ) -> Result<(AgentConfig, String)> {
+    pub fn provider(&self) -> Result<(Arc<dyn Provider>, String)> {
         let provider = ProviderChoice::from_config(self)?;
         let model = self.model_for(provider);
-        let config = match provider {
+        let provider: Arc<dyn Provider> = match provider {
             ProviderChoice::OpenAi => {
                 let api_key = self
                     .api_key
                     .clone()
                     .or_else(|| std::env::var("OPENAI_API_KEY").ok())
                     .context("set api_key in tiny.json or OPENAI_API_KEY in your environment")?;
-                AgentConfig::new(OpenAiProvider::new(api_key, &model), system).with_tools(tools)
+                Arc::new(OpenAiProvider::new(api_key, &model))
             }
             ProviderChoice::LlamaCpp => {
                 let base_url = self.base_url_for(provider);
-                AgentConfig::new(LlamaCppProvider::new(base_url, &model), system).with_tools(tools)
+                Arc::new(LlamaCppProvider::new(base_url, &model))
             }
             ProviderChoice::Omlx => {
                 let base_url = self.base_url_for(provider);
@@ -81,12 +78,11 @@ impl Config {
                     .api_key
                     .clone()
                     .or_else(|| std::env::var("OMLX_API_KEY").ok());
-                AgentConfig::new(OmlxProvider::new(base_url, api_key, &model), system)
-                    .with_tools(tools)
+                Arc::new(OmlxProvider::new(base_url, api_key, &model))
             }
         };
 
-        Ok((config, model))
+        Ok((provider, model))
     }
 
     fn has_openai_key(&self) -> bool {
