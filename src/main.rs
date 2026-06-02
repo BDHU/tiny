@@ -4,6 +4,7 @@ use tiny::{AgentConfig, ErasedTool};
 
 mod app_config;
 mod backend;
+mod subagent;
 mod tools;
 mod toolset;
 mod tui;
@@ -15,7 +16,7 @@ mod web_search;
 async fn main() -> Result<()> {
     let cfg = app_config::load_config()?;
     let (provider, model) = cfg.provider()?;
-    let tools = tools::default_tools();
+    let tools = tools::default_tools(provider.clone());
     let system = default_system_prompt(&tools);
     let config = AgentConfig::new_with_provider(provider, system).with_tools(tools);
 

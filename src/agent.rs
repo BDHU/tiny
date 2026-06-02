@@ -64,6 +64,7 @@ pub struct AgentConfig {
     tools: Vec<Box<dyn ErasedTool>>,
     system: String,
     compact_threshold: usize,
+    auto_allow_tools: bool,
 }
 
 impl AgentConfig {
@@ -77,6 +78,7 @@ impl AgentConfig {
             tools: Vec::new(),
             system: system.into(),
             compact_threshold: compact::DEFAULT_THRESHOLD,
+            auto_allow_tools: false,
         }
     }
 
@@ -92,6 +94,11 @@ impl AgentConfig {
 
     pub fn with_compact_threshold(mut self, chars: usize) -> Self {
         self.compact_threshold = chars;
+        self
+    }
+
+    pub fn with_auto_allow_tools(mut self) -> Self {
+        self.auto_allow_tools = true;
         self
     }
 }
@@ -180,6 +187,10 @@ impl Agent {
     }
 
     async fn ask_permission(&self, call: &ToolCall, events: &EventSender) -> Decision {
+        if self.config.auto_allow_tools {
+            return Decision::Allow;
+        }
+
         let (reply, decision) = oneshot::channel();
         let request = Event::PermissionRequest {
             call: call.clone(),
