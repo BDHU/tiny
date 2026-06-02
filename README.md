@@ -38,6 +38,19 @@ chat completions endpoint:
 Tool calls require a llama.cpp chat template/model that supports OpenAI-style
 function calling, for example by starting `llama-server` with `--jinja`.
 
+For oMLX, start the local server and configure its OpenAI-compatible endpoint.
+`api_key` is optional when oMLX auth is disabled; if omitted, tiny reads
+`OMLX_API_KEY` from the environment.
+
+```json
+{
+  "provider": "omlx",
+  "base_url": "http://127.0.0.1:8000",
+  "api_key": "omlx",
+  "model": "gemma-4-26b-a4b-it-4bit"
+}
+```
+
 ## Usage
 
 ```sh

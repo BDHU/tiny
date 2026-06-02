@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use std::path::PathBuf;
-use tiny::providers::{LlamaCppProvider, OpenAiProvider};
+use tiny::providers::{LlamaCppProvider, OmlxProvider, OpenAiProvider};
 use tiny::{AgentConfig, ErasedTool};
 
 #[derive(Deserialize, Default)]
@@ -16,6 +16,7 @@ pub struct Config {
 enum ProviderChoice {
     OpenAi,
     LlamaCpp,
+    Omlx,
 }
 
 impl ProviderChoice {
@@ -31,6 +32,7 @@ impl ProviderChoice {
         match provider.trim().to_ascii_lowercase().as_str() {
             "openai" => Ok(Self::OpenAi),
             "llama.cpp" | "llama_cpp" | "llamacpp" => Ok(Self::LlamaCpp),
+            "omlx" => Ok(Self::Omlx),
             other => bail!("unknown provider: {other}"),
         }
     }
@@ -39,6 +41,15 @@ impl ProviderChoice {
         match self {
             Self::OpenAi => "gpt-4o-mini",
             Self::LlamaCpp => "local",
+            Self::Omlx => "local",
+        }
+    }
+
+    fn default_base_url(self) -> &'static str {
+        match self {
+            Self::OpenAi => "https://api.openai.com",
+            Self::LlamaCpp => "http://127.0.0.1:8080",
+            Self::Omlx => "http://127.0.0.1:8000",
         }
     }
 }
@@ -61,11 +72,17 @@ impl Config {
                 AgentConfig::new(OpenAiProvider::new(api_key, &model), system).with_tools(tools)
             }
             ProviderChoice::LlamaCpp => {
-                let base_url = self
-                    .base_url
-                    .clone()
-                    .unwrap_or_else(|| "http://127.0.0.1:8080".to_string());
+                let base_url = self.base_url_for(provider);
                 AgentConfig::new(LlamaCppProvider::new(base_url, &model), system).with_tools(tools)
+            }
+            ProviderChoice::Omlx => {
+                let base_url = self.base_url_for(provider);
+                let api_key = self
+                    .api_key
+                    .clone()
+                    .or_else(|| std::env::var("OMLX_API_KEY").ok());
+                AgentConfig::new(OmlxProvider::new(base_url, api_key, &model), system)
+                    .with_tools(tools)
             }
         };
 
@@ -80,6 +97,12 @@ impl Config {
         self.model
             .clone()
             .unwrap_or_else(|| provider.default_model().to_string())
+    }
+
+    fn base_url_for(&self, provider: ProviderChoice) -> String {
+        self.base_url
+            .clone()
+            .unwrap_or_else(|| provider.default_base_url().to_string())
     }
 }
 
