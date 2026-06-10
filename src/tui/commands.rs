@@ -143,7 +143,10 @@ mod tests {
             palette_matches(input).into_iter().map(|c| c.name).collect()
         };
 
-        assert_eq!(names("/"), vec!["new", "sessions", "compact", "help", "quit"]);
+        assert_eq!(
+            names("/"),
+            vec!["new", "sessions", "compact", "help", "quit"]
+        );
         assert_eq!(names("/se"), vec!["sessions"]);
         assert_eq!(names("/h"), vec!["help"]);
         assert!(names("/x").is_empty());

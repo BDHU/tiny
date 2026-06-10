@@ -1,107 +1,20 @@
-use crate::compact;
-use crate::tool::{boxed_tool, ErasedTool, Tool};
+mod config;
+mod event;
+mod executor;
+mod message;
+mod provider;
+
+pub use config::AgentConfig;
+pub use event::{Decision, Event, EventSender};
+pub use message::{Message, ToolCall, ToolResult};
+pub use provider::Provider;
+
 use anyhow::{anyhow, Result};
-use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::sync::Arc;
-use tokio::sync::{mpsc, oneshot};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolCall {
-    pub id: String,
-    pub name: String,
-    pub input: Value,
-}
+use crate::compact;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolResult {
-    pub id: String,
-    pub content: String,
-    pub is_error: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum Message {
-    User(String),
-    Assistant {
-        text: String,
-        tool_calls: Vec<ToolCall>,
-    },
-    Tool(ToolResult),
-}
-
-#[async_trait]
-pub trait Provider: Send + Sync {
-    async fn complete(
-        &self,
-        system: &str,
-        messages: &[Message],
-        tools: &[Box<dyn ErasedTool>],
-    ) -> Result<Message>;
-}
-
-#[derive(Debug, Clone)]
-pub enum Decision {
-    Allow,
-    Deny(String),
-}
-
-pub enum Event {
-    Message(Message),
-    PermissionRequest {
-        call: ToolCall,
-        reply: oneshot::Sender<Decision>,
-    },
-    TurnError(String),
-    TurnDone,
-}
-
-pub type EventSender = mpsc::UnboundedSender<Event>;
-
-pub struct AgentConfig {
-    provider: Arc<dyn Provider>,
-    tools: Vec<Box<dyn ErasedTool>>,
-    system: String,
-    compact_threshold: usize,
-    auto_allow_tools: bool,
-}
-
-impl AgentConfig {
-    pub fn new(provider: impl Provider + 'static, system: impl Into<String>) -> Self {
-        Self::new_with_provider(Arc::new(provider), system)
-    }
-
-    pub fn new_with_provider(provider: Arc<dyn Provider>, system: impl Into<String>) -> Self {
-        Self {
-            provider,
-            tools: Vec::new(),
-            system: system.into(),
-            compact_threshold: compact::DEFAULT_THRESHOLD,
-            auto_allow_tools: false,
-        }
-    }
-
-    pub fn with_tool(mut self, tool: impl Tool + 'static) -> Self {
-        self.tools.push(boxed_tool(tool));
-        self
-    }
-
-    pub fn with_tools(mut self, tools: impl IntoIterator<Item = Box<dyn ErasedTool>>) -> Self {
-        self.tools.extend(tools);
-        self
-    }
-
-    pub fn with_compact_threshold(mut self, chars: usize) -> Self {
-        self.compact_threshold = chars;
-        self
-    }
-
-    pub fn with_auto_allow_tools(mut self) -> Self {
-        self.auto_allow_tools = true;
-        self
-    }
-}
+use self::executor::execute_tool;
 
 pub struct Agent {
     config: Arc<AgentConfig>,
@@ -114,7 +27,7 @@ impl Agent {
     }
 
     pub async fn compact(&mut self) -> Result<bool> {
-        compact::compact_now(&mut self.history, &*self.config.provider).await
+        compact::compact_now(&mut self.history, self.config.provider.as_ref()).await
     }
 
     pub async fn send(
@@ -123,17 +36,7 @@ impl Agent {
         events: &EventSender,
     ) -> Result<()> {
         let result = self.run_turn(user_input.into(), events).await;
-        if let Err(error) = &result {
-            let _ = events.send(Event::TurnError(error.to_string()));
-        } else {
-            let _ = compact::compact_if_needed(
-                &mut self.history,
-                &*self.config.provider,
-                self.config.compact_threshold,
-            )
-            .await;
-        }
-        let _ = events.send(Event::TurnDone);
+        self.finish_turn(&result, events).await;
         result
     }
 
@@ -141,66 +44,59 @@ impl Agent {
         self.record(Message::User(user_input), events);
 
         loop {
-            let assistant = self
-                .config
-                .provider
-                .complete(&self.config.system, &self.history, &self.config.tools)
-                .await?;
-
-            let Message::Assistant { tool_calls, .. } = &assistant else {
-                return Err(anyhow!("provider returned a non-assistant message"));
-            };
-            let calls = tool_calls.clone();
+            let assistant = self.next_assistant_message().await?;
+            let calls = assistant.tool_calls().to_vec();
             self.record(assistant, events);
+
             if calls.is_empty() {
                 return Ok(());
             }
-            for call in calls {
-                let result = self.call_tool(call, events).await;
-                self.record(Message::Tool(result), events);
-            }
+
+            self.run_tool_calls(calls, events).await;
         }
+    }
+
+    async fn next_assistant_message(&self) -> Result<Message> {
+        let message = self
+            .config
+            .provider
+            .complete(&self.config.system, &self.history, &self.config.tools)
+            .await?;
+
+        if !message.is_assistant() {
+            return Err(anyhow!("provider returned a non-assistant message"));
+        }
+
+        Ok(message)
+    }
+
+    async fn run_tool_calls(&mut self, calls: Vec<ToolCall>, events: &EventSender) {
+        for call in calls {
+            let result = execute_tool(&self.config, events, call).await;
+            self.record(Message::Tool(result), events);
+        }
+    }
+
+    async fn finish_turn(&mut self, result: &Result<()>, events: &EventSender) {
+        if let Err(error) = result {
+            let _ = events.send(Event::TurnError(error.to_string()));
+        } else {
+            let _ = compact::compact_if_needed(
+                &mut self.history,
+                self.config.provider.as_ref(),
+                self.config.compact_threshold,
+            )
+            .await;
+        }
+
+        let _ = events.send(Event::TurnDone);
     }
 
     fn record(&mut self, message: Message, events: &EventSender) {
         let _ = events.send(Event::Message(message.clone()));
         self.history.push(message);
     }
-
-    async fn call_tool(&self, call: ToolCall, events: &EventSender) -> ToolResult {
-        let (content, is_error) = match self.ask_permission(&call, events).await {
-            Decision::Allow => match self.config.tools.iter().find(|t| t.name() == call.name) {
-                Some(tool) => match tool.call(call.input).await {
-                    Ok(out) => (out, false),
-                    Err(e) => (e.to_string(), true),
-                },
-                None => (format!("unknown tool: {}", call.name), true),
-            },
-            Decision::Deny(reason) => (reason, true),
-        };
-
-        ToolResult {
-            id: call.id,
-            content,
-            is_error,
-        }
-    }
-
-    async fn ask_permission(&self, call: &ToolCall, events: &EventSender) -> Decision {
-        if self.config.auto_allow_tools {
-            return Decision::Allow;
-        }
-
-        let (reply, decision) = oneshot::channel();
-        let request = Event::PermissionRequest {
-            call: call.clone(),
-            reply,
-        };
-        if events.send(request).is_err() {
-            return Decision::Deny("permission channel closed".into());
-        }
-        decision
-            .await
-            .unwrap_or_else(|_| Decision::Deny("permission cancelled".into()))
-    }
 }
+
+#[cfg(test)]
+mod tests;

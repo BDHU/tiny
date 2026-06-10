@@ -61,10 +61,7 @@ pub async fn compact_if_needed(
 
 // Manual path: unconditional. Summarize the full history into one message.
 // Caller decides when to invoke this — we just do the work.
-pub async fn compact_now(
-    history: &mut Vec<Message>,
-    provider: &dyn Provider,
-) -> Result<bool> {
+pub async fn compact_now(history: &mut Vec<Message>, provider: &dyn Provider) -> Result<bool> {
     if history.is_empty() {
         return Ok(false);
     }
@@ -82,9 +79,7 @@ async fn summarize_and_replace(
     // putting the instruction in the system prompt.
     let mut messages: Vec<Message> = history[..cutoff].to_vec();
     messages.push(Message::User(SUMMARY_INSTRUCTION.into()));
-    let response = provider
-        .complete(SUMMARY_SYSTEM, &messages, &[])
-        .await?;
+    let response = provider.complete(SUMMARY_SYSTEM, &messages, &[]).await?;
     let Message::Assistant { text, .. } = response else {
         return Err(anyhow!("summarizer returned non-assistant message"));
     };
@@ -220,7 +215,9 @@ mod tests {
         // Keep last 3 user turns: u3, a3, u4, a4, u5, a5 — plus synthetic at index 0.
         assert_eq!(history.len(), 7);
         assert!(matches!(&history[0], Message::User(s) if s.contains("SUMMARIZED")));
-        assert!(matches!(&history[0], Message::User(s) if s.contains("<previous-conversation-summary>")));
+        assert!(
+            matches!(&history[0], Message::User(s) if s.contains("<previous-conversation-summary>"))
+        );
         assert!(matches!(&history[1], Message::User(s) if s == "u3"));
         assert!(matches!(&history[6], Message::Assistant { text, .. } if text == "a5"));
     }
